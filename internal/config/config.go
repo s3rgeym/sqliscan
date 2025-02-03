@@ -11,36 +11,39 @@ type Config struct {
 	ConcurrencyLimit  int
 	CrawlDepth        int
 	LogLevel          string
+	MaxCheckParams    int
 	MaxHostErrors     int
 	MaxInternalLinks  int
 	MaxRetries        int
 	ProxyURL          string
 	RateLimitInterval time.Duration
+	SkipCMSCheck      bool
 	SkipVerify        bool
 	Timeout           time.Duration
-	SkipCMSCheck      bool
 	UserAgent         string
+}
+
+func registerFlags(cfg *Config) {
+	flag.BoolVar(&cfg.SkipCMSCheck, "skip-cms-check", false, "Skip CMS check")
+	flag.BoolVar(&cfg.SkipVerify, "skip-verify", false, "Disable SSL certificate validation")
+	flag.DurationVar(&cfg.RateLimitInterval, "r", 50*time.Millisecond, "Delay between requests")
+	flag.DurationVar(&cfg.Timeout, "t", 15*time.Second, "Request timeout duration")
+	flag.IntVar(&cfg.ConcurrencyLimit, "c", 20, "Number of concurrent requests")
+	flag.IntVar(&cfg.CrawlDepth, "depth", 3, "Maximum link depth for crawling")
+	flag.IntVar(&cfg.MaxCheckParams, "check-params", 5, "Maximum number of check parameters")
+	flag.IntVar(&cfg.MaxHostErrors, "host-errors", 50, "Max allowed errors per host")
+	flag.IntVar(&cfg.MaxInternalLinks, "internal-links", 150, "Max number of internal links to follow")
+	flag.IntVar(&cfg.MaxRetries, "retries", 3, "Retry attempts per request")
+	flag.StringVar(&cfg.InputFile, "i", "", "Path to input file with URLs")
+	flag.StringVar(&cfg.LogLevel, "log", "info", "Logging level: debug, info, warn, error")
+	flag.StringVar(&cfg.OutputFile, "o", "", "Path to output file for results")
+	flag.StringVar(&cfg.ProxyURL, "proxy", "", "Proxy URL for requests")
+	flag.StringVar(&cfg.UserAgent, "ua", "", "Custom User-Agent header")
 }
 
 func ParseFlags() Config {
 	var cfg Config
-
-	flag.BoolVar(&cfg.SkipCMSCheck, "skip-cms-check", false, "Skip CMS Check")
-	flag.BoolVar(&cfg.SkipVerify, "skip-verify", false, "Skip SSL certificate verification")
-	flag.DurationVar(&cfg.RateLimitInterval, "r", 50*time.Millisecond, "Rate limit interval between requests")
-	flag.DurationVar(&cfg.Timeout, "t", 15*time.Second, "Request timeout")
-	flag.IntVar(&cfg.ConcurrencyLimit, "c", 20, "Concurrency limit")
-	flag.IntVar(&cfg.CrawlDepth, "depth", 3, "Crawl depth")
-	flag.IntVar(&cfg.MaxHostErrors, "host-errors", 50, "Maximum errors allowed per host")
-	flag.IntVar(&cfg.MaxInternalLinks, "internal-links", 150, "Maximum number of internal links")
-	flag.IntVar(&cfg.MaxRetries, "retries", 3, "Maximum number of retries for each request")
-	flag.StringVar(&cfg.InputFile, "i", "", "Input file with list of URLs")
-	flag.StringVar(&cfg.LogLevel, "log", "info", "Log level (debug, info, warn, error)")
-	flag.StringVar(&cfg.OutputFile, "o", "", "Output file for results")
-	flag.StringVar(&cfg.ProxyURL, "proxy", "", "Proxy URL for requests")
-	flag.StringVar(&cfg.UserAgent, "ua", "", "Custom User-Agent")
-
+	registerFlags(&cfg)
 	flag.Parse()
-
 	return cfg
 }

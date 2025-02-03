@@ -47,6 +47,7 @@ func main() {
 	scan := scanner.NewScanner(
 		scanner.WithConcurrencyLimit(cfg.ConcurrencyLimit),
 		scanner.WithCrawlDepth(cfg.CrawlDepth),
+		scanner.WithMaxCheckParams(cfg.MaxCheckParams),
 		scanner.WithMaxHostErrors(cfg.MaxHostErrors),
 		scanner.WithMaxInternalLinks(cfg.MaxInternalLinks),
 		scanner.WithMaxRetries(cfg.MaxRetries),

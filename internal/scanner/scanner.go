@@ -19,7 +19,9 @@ import (
 )
 
 var (
-	quotes          = "\"'"
+	// null-байт служит индикатором конца строки в C/C++
+	//sqliPayload     = "'\"\x00"
+	sqliPayload     = "'\""
 	sqlErrorPattern = regexp.MustCompile(`SQL syntax.*MySQL|Unclosed quotation mark.*SQL Server|You have an error in your SQL syntax|Warning.*pg_query|SQLite.*near|syntax error`)
 )
 
@@ -31,11 +33,12 @@ type Scanner struct {
 	hostErrors       map[string]int
 	hostVisits       map[string]int
 	lim              *rate.Limiter
+	maxCheckParams   int
 	maxHostErrors    int
 	maxInternalLinks int
 	mu               sync.Mutex
 	semaphore        chan struct{}
-	useCMSCheck      bool
+	skipCMSCheck     bool
 	userAgent        string
 	visited          sync.Map
 	wg               sync.WaitGroup
@@ -51,7 +54,7 @@ type SQLiCheck struct {
 
 type SQLiDetails struct {
 	ErrorMessage string `json:"error_message"`
-	PageTitle    string `json:"page_title"`
+	PageTitle    string `json:"title"`
 	StatusCode   int    `json:"status_code"`
 	VulnParam    string `json:"vuln_param"`
 }
@@ -82,9 +85,10 @@ func NewScanner(opts ...Option) *Scanner {
 		crawlDepth:       3,
 		hostVisits:       make(map[string]int),
 		lim:              rate.NewLimiter(rate.Every(50*time.Millisecond), 1),
+		maxCheckParams:   5,
 		maxHostErrors:    50,
 		maxInternalLinks: 150,
-		useCMSCheck:      true,
+		skipCMSCheck:     true,
 		userAgent:        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 	}
 	for _, opt := range opts {
@@ -131,6 +135,12 @@ func WithCrawlDepth(depth int) Option {
 	}
 }
 
+func WithMaxCheckParams(limit int) Option {
+	return func(s *Scanner) {
+		s.maxCheckParams = limit
+	}
+}
+
 func WithMaxInternalLinks(limit int) Option {
 	return func(s *Scanner) {
 		s.maxInternalLinks = limit
@@ -166,7 +176,7 @@ func WithProxyURL(proxyAddr string) Option {
 
 func WithSkipCMSCheck(check bool) Option {
 	return func(s *Scanner) {
-		s.useCMSCheck = !check
+		s.skipCMSCheck = check
 	}
 }
 
@@ -233,19 +243,21 @@ func (s *Scanner) sendRequest(method, url string, params map[string]string) ([]b
 	return body, resp.StatusCode, resp.Header, nil
 }
 
-func (s *Scanner) isCMS(body string) bool {
-	indicators := []string{
-		"/wp-content/", // Wordpress
-		"Joomla! - Open Source Content Management", // Joomla
-		"/sites/all/modules/",                      // Drupal
+func (s *Scanner) detectCMS(body string) string {
+	indicators := [][]string{
+		{"Wordpress", "/wp-content/"},
+		{"Joomla", "Joomla! - Open Source Content Management"},
+		{"Drupal", "/sites/all/modules/"},
+		// TODO: добавить еще
 	}
 
 	for _, indicator := range indicators {
-		if strings.Contains(body, indicator) {
-			return true
+		if strings.Contains(body, indicator[1]) {
+			return indicator[0]
 		}
 	}
-	return false
+
+	return ""
 }
 
 func (s *Scanner) crawl(url string, depth int, sqliChecks chan<- SQLiCheck) {
@@ -276,16 +288,18 @@ func (s *Scanner) crawl(url string, depth int, sqliChecks chan<- SQLiCheck) {
 		return
 	}
 
-	if s.useCMSCheck && s.isCMS(string(body)) {
-		logger.Warnf("CMS detected: %s", url)
-		return
+	if !s.skipCMSCheck {
+		if cms := s.detectCMS(string(body)); cms != "" {
+			logger.Warnf("CMS detected: %s - %s", url, cms)
+			return
+		}
 	}
 
-	s.extractLinks(body, url, depth, sqliChecks)
-	s.extractForms(body, url, sqliChecks)
+	s.processLinks(body, url, depth, sqliChecks)
+	s.processForms(body, url, sqliChecks)
 }
 
-func (s *Scanner) extractLinks(body []byte, baseURL string, depth int, sqliChecks chan<- SQLiCheck) {
+func (s *Scanner) processLinks(body []byte, baseURL string, depth int, sqliChecks chan<- SQLiCheck) {
 	links, _ := utils.ExtractLinks(body, baseURL)
 	for _, link := range links {
 		link, err := utils.StripFragment(link)
@@ -311,8 +325,6 @@ func (s *Scanner) extractLinks(body []byte, baseURL string, depth int, sqliCheck
 }
 
 func (s *Scanner) autoFillFields(fields map[string]string) map[string]string {
-	filledFields := make(map[string]string)
-
 	defaultValues := map[string]string{
 		"email":    "dummy@gmail.com",
 		"password": "P@ssw0rd123",
@@ -320,17 +332,23 @@ func (s *Scanner) autoFillFields(fields map[string]string) map[string]string {
 		"phone":    "+1234567890",
 		"address":  "123 Main St",
 		"id":       "123",
-		"":         "foo",
 	}
+
+	getDefault := func(name, fallbackValue string) string {
+		lowerName := strings.ToLower(name)
+		for k, v := range defaultValues {
+			if strings.Contains(lowerName, k) {
+				return v
+			}
+		}
+		return fallbackValue
+	}
+
+	filledFields := make(map[string]string)
 
 	for key, value := range fields {
 		if value == "" {
-			for k, v := range defaultValues {
-				if strings.Contains(strings.ToLower(key), k) {
-					filledFields[key] = v
-					break
-				}
-			}
+			filledFields[key] = getDefault(key, "foo")
 		} else {
 			filledFields[key] = value
 		}
@@ -339,7 +357,7 @@ func (s *Scanner) autoFillFields(fields map[string]string) map[string]string {
 	return filledFields
 }
 
-func (s *Scanner) extractForms(body []byte, baseURL string, sqliChecks chan<- SQLiCheck) {
+func (s *Scanner) processForms(body []byte, baseURL string, sqliChecks chan<- SQLiCheck) {
 	forms, _ := utils.ExtractForms(body, baseURL)
 	for _, form := range forms {
 		// Пропускаем формы, ведущие на сторонние домены
@@ -352,7 +370,7 @@ func (s *Scanner) extractForms(body []byte, baseURL string, sqliChecks chan<- SQ
 }
 
 func (s *Scanner) injectSQLiPayload(target string) string {
-	payload := url.QueryEscape(quotes)
+	payload := url.QueryEscape(sqliPayload)
 	if strings.Count(target, "/") > 3 && strings.HasSuffix(target, "/") {
 		return target[:len(target)-1] + payload + "/"
 	}
@@ -406,41 +424,44 @@ func (s *Scanner) checkSQLi(check SQLiCheck, results chan<- ScanResult) {
 }
 
 func (s *Scanner) detectSQLi(check SQLiCheck) (bool, SQLiDetails) {
-	if len(check.Params) == 0 {
-		logger.Debugf("Check SQLi: %s %s", check.Method, check.URL)
-		body, _, _, _ := s.sendRequest(check.Method, check.URL, nil)
+	handle := func(params map[string]string) (string, int, string) {
+		body, status, _, _ := s.sendRequest(check.Method, check.URL, params)
 		htmlContent := string(body)
-		match := sqlErrorPattern.FindString(htmlContent)
-		if match == "" {
-			return false, SQLiDetails{}
+		errorMessage := sqlErrorPattern.FindString(htmlContent)
+		if errorMessage == "" {
+			return "", 0, ""
 		}
 		title := utils.ExtractTitle(htmlContent)
-		return true, SQLiDetails{ErrorMessage: match, PageTitle: title}
+		return errorMessage, status, title
 	}
 
-	count := 0
-	for param := range check.Params {
-		// Проверяем только 5 первых параметров
-		if count >= 5 {
-			break
+	if len(check.Params) == 0 {
+		logger.Debugf("Check SQLi: %s %s", check.Method, check.URL)
+		errorMessage, status, title := handle(nil)
+		if errorMessage != "" {
+			return true, SQLiDetails{ErrorMessage: errorMessage, StatusCode: status, PageTitle: title}
 		}
-		params := utils.CopyStringMap(check.Params)
-		params[param] += quotes
-		logger.Debugf("Check SQLi: %s %s; param=%q", check.Method, check.URL, param)
-		body, _, _, _ := s.sendRequest(check.Method, check.URL, params)
-		htmlContent := string(body)
-		if match := sqlErrorPattern.FindString(htmlContent); match != "" {
-			title := utils.ExtractTitle(htmlContent)
-			return true, SQLiDetails{ErrorMessage: match, VulnParam: param, PageTitle: title}
+	} else {
+		count := 0
+		for param := range check.Params {
+			if count >= s.maxCheckParams {
+				break
+			}
+			params := utils.CopyStringMap(check.Params)
+			params[param] += sqliPayload
+			logger.Debugf("Check SQLi: %s %s; param=%q", check.Method, check.URL, param)
+			errorMessage, status, title := handle(params)
+			if errorMessage != "" {
+				return true, SQLiDetails{ErrorMessage: errorMessage, VulnParam: param, PageTitle: title, StatusCode: status}
+			}
+			count++
 		}
-		count++
 	}
 	return false, SQLiDetails{}
 }
 
 func (s *Scanner) Scan(urls []string) <-chan ScanResult {
 	logger.Debugf("Scanning %d URLs", len(urls))
-	logger.Debugf("CMS Check: %v", s.useCMSCheck)
 	sqliChecks := make(chan SQLiCheck)
 	results := make(chan ScanResult)
 	go func() {
