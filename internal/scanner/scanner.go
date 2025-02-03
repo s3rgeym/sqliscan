@@ -418,7 +418,7 @@ func (s *Scanner) detectSQLi(check SQLiCheck) (bool, SQLiDetails) {
 		return true, SQLiDetails{ErrorMessage: match, PageTitle: title}
 	}
 
-	count := 5
+	count := 0
 	for param := range check.Params {
 		// Проверяем только 5 первых параметров
 		if count >= 5 {
