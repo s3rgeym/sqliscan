@@ -265,6 +265,7 @@ func (self *Scanner) detectCMS(body string) string {
 		{"Wordpress", "/wp-content/"},
 		{"Joomla", "Joomla! - Open Source Content Management"},
 		{"Drupal", "/sites/all/modules/"},
+		{"Tilda", "https://static.tildacdn.com/"},
 		// TODO: добавить еще
 	}
 
