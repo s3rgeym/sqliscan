@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"regexp"
 	"sqliscan/internal/logger"
@@ -37,7 +38,7 @@ type Scanner struct {
 	maxHostErrors    int
 	maxInternalLinks int
 	mu               sync.Mutex
-	semaphore        chan struct{}
+	sem              chan struct{}
 	skipCMSCheck     bool
 	userAgent        string
 	visited          sync.Map
@@ -66,20 +67,21 @@ type ScanResult struct {
 }
 
 func NewScanner(opts ...Option) *Scanner {
+	jar, _ := cookiejar.New(nil)
 	transport := &http.Transport{}
 	client := retryablehttp.NewClient()
 
 	// Отключаем логирование
 	client.Logger = nil
-
 	client.HTTPClient.Transport = transport
+	client.HTTPClient.Jar = jar
 
 	// Отключаем redirect
 	client.HTTPClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
 
-	s := &Scanner{
+	scanner := &Scanner{
 		client:           client,
 		concurrencyLimit: 20,
 		crawlDepth:       3,
@@ -92,96 +94,96 @@ func NewScanner(opts ...Option) *Scanner {
 		userAgent:        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 	}
 	for _, opt := range opts {
-		opt(s)
+		opt(scanner)
 	}
-	s.semaphore = make(chan struct{}, s.concurrencyLimit)
-	return s
+	scanner.sem = make(chan struct{}, scanner.concurrencyLimit)
+	return scanner
 }
 
 func WithConcurrencyLimit(limit int) Option {
-	return func(s *Scanner) {
-		s.concurrencyLimit = limit
+	return func(self *Scanner) {
+		self.concurrencyLimit = limit
 	}
 }
 
 func WithRateLimit(interval time.Duration) Option {
-	return func(s *Scanner) {
-		s.lim = rate.NewLimiter(rate.Every(interval), 1)
+	return func(self *Scanner) {
+		self.lim = rate.NewLimiter(rate.Every(interval), 1)
 	}
 }
 
 func WithMaxRetries(retries int) Option {
-	return func(s *Scanner) {
-		s.client.RetryMax = retries
+	return func(self *Scanner) {
+		self.client.RetryMax = retries
 	}
 }
 
 func WithTimeout(timeout time.Duration) Option {
-	return func(s *Scanner) {
-		s.client.HTTPClient.Timeout = timeout
+	return func(self *Scanner) {
+		self.client.HTTPClient.Timeout = timeout
 	}
 }
 
 func WithSkipVerify(skipVerify bool) Option {
-	return func(s *Scanner) {
-		transport := s.client.HTTPClient.Transport.(*http.Transport)
+	return func(self *Scanner) {
+		transport := self.client.HTTPClient.Transport.(*http.Transport)
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: skipVerify}
 	}
 }
 
 func WithCrawlDepth(depth int) Option {
-	return func(s *Scanner) {
-		s.crawlDepth = depth
+	return func(self *Scanner) {
+		self.crawlDepth = depth
 	}
 }
 
 func WithMaxCheckParams(limit int) Option {
-	return func(s *Scanner) {
-		s.maxCheckParams = limit
+	return func(self *Scanner) {
+		self.maxCheckParams = limit
 	}
 }
 
 func WithMaxInternalLinks(limit int) Option {
-	return func(s *Scanner) {
-		s.maxInternalLinks = limit
+	return func(self *Scanner) {
+		self.maxInternalLinks = limit
 	}
 }
 
 func WithMaxHostErrors(limit int) Option {
-	return func(s *Scanner) {
-		s.maxHostErrors = limit
+	return func(self *Scanner) {
+		self.maxHostErrors = limit
 	}
 }
 
 func WithUserAgent(userAgent string) Option {
-	return func(s *Scanner) {
+	return func(self *Scanner) {
 		if userAgent != "" {
-			s.userAgent = userAgent
+			self.userAgent = userAgent
 		}
 	}
 }
 
 func WithProxyURL(proxyAddr string) Option {
-	return func(s *Scanner) {
+	return func(self *Scanner) {
 		if proxyAddr != "" {
 			parsed, err := url.Parse(proxyAddr)
 			if err != nil {
 				logger.Fatalf("Invalid proxy address: %v", err)
 			}
-			transport := s.client.HTTPClient.Transport.(*http.Transport)
+			transport := self.client.HTTPClient.Transport.(*http.Transport)
 			transport.Proxy = http.ProxyURL(parsed)
 		}
 	}
 }
 
 func WithSkipCMSCheck(check bool) Option {
-	return func(s *Scanner) {
-		s.skipCMSCheck = check
+	return func(self *Scanner) {
+		self.skipCMSCheck = check
 	}
 }
 
-func (s *Scanner) performRequest(method, target string, params map[string]string) (*http.Response, error) {
-	if err := s.lim.Wait(context.Background()); err != nil {
+func (self *Scanner) performRequest(method, target string, params map[string]string) (*http.Response, error) {
+	if err := self.lim.Wait(context.Background()); err != nil {
 		logger.Errorf("Rate limiter error: %v", err)
 		return nil, err
 	}
@@ -190,7 +192,7 @@ func (s *Scanner) performRequest(method, target string, params map[string]string
 	if err != nil {
 		return nil, err
 	}
-	s.setHeaders(req)
+	self.setHeaders(req)
 	if method == http.MethodGet || method == http.MethodHead {
 		q := req.URL.Query()
 		for key, value := range params {
@@ -205,33 +207,33 @@ func (s *Scanner) performRequest(method, target string, params map[string]string
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Body = io.NopCloser(strings.NewReader(form.Encode()))
 	}
-	return s.client.Do(req)
+	return self.client.Do(req)
 }
 
-func (s *Scanner) isHostErrorLimit(host string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	errors, exists := s.hostErrors[host]
+func (self *Scanner) isHostErrorLimit(host string) bool {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	errors, exists := self.hostErrors[host]
 	if !exists {
 		return false
 	}
-	return errors >= s.maxHostErrors
+	return errors >= self.maxHostErrors
 }
 
-func (s *Scanner) increaseHostErrors(host string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.hostErrors[host]++
+func (self *Scanner) increaseHostErrors(host string) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	self.hostErrors[host]++
 }
 
-func (s *Scanner) sendRequest(method, url string, params map[string]string) ([]byte, int, http.Header, error) {
+func (self *Scanner) sendRequest(method, url string, params map[string]string) ([]byte, int, http.Header, error) {
 	host := utils.ExtractHost(url)
-	if s.isHostErrorLimit(host) {
+	if self.isHostErrorLimit(host) {
 		return nil, 0, nil, fmt.Errorf("host error limit exceeded")
 	}
-	resp, err := s.performRequest(method, url, params)
+	resp, err := self.performRequest(method, url, params)
 	if err != nil {
-		s.increaseHostErrors(host)
+		self.increaseHostErrors(host)
 		return nil, 0, nil, err
 	}
 	defer resp.Body.Close()
@@ -243,7 +245,7 @@ func (s *Scanner) sendRequest(method, url string, params map[string]string) ([]b
 	return body, resp.StatusCode, resp.Header, nil
 }
 
-func (s *Scanner) detectCMS(body string) string {
+func (self *Scanner) detectCMS(body string) string {
 	indicators := [][]string{
 		{"Wordpress", "/wp-content/"},
 		{"Joomla", "Joomla! - Open Source Content Management"},
@@ -260,23 +262,23 @@ func (s *Scanner) detectCMS(body string) string {
 	return ""
 }
 
-func (s *Scanner) crawl(url string, depth int, sqliChecks chan<- SQLiCheck) {
-	defer s.wg.Done() // у нас рекурсия!!!
-	if s.isLimitReached(url) {
+func (self *Scanner) crawl(url string, depth int, sqliChecks chan<- SQLiCheck) {
+	defer self.wg.Done() // у нас рекурсия!!!
+	if self.isLimitReached(url) {
 		logger.Debugf("Skip %s: limit reached", url)
-		<-s.semaphore
+		<-self.sem
 		return
 	}
 
-	body, status, header, err := s.sendRequest(http.MethodGet, url, nil)
-	<-s.semaphore
+	body, status, header, err := self.sendRequest(http.MethodGet, url, nil)
+	<-self.sem
 
 	if err != nil {
 		logger.Errorf("Request failed: %s (%v)", url, err)
 		return
 	}
 
-	s.setVisited(url)
+	self.setVisited(url)
 	if status != http.StatusOK {
 		logger.Debugf("Skip %s with status %d", url, status)
 		return
@@ -288,43 +290,43 @@ func (s *Scanner) crawl(url string, depth int, sqliChecks chan<- SQLiCheck) {
 		return
 	}
 
-	if !s.skipCMSCheck {
-		if cms := s.detectCMS(string(body)); cms != "" {
+	if !self.skipCMSCheck {
+		if cms := self.detectCMS(string(body)); cms != "" {
 			logger.Warnf("CMS detected: %s - %s", url, cms)
 			return
 		}
 	}
 
-	s.processLinks(body, url, depth, sqliChecks)
-	s.processForms(body, url, sqliChecks)
+	self.processLinks(body, url, depth, sqliChecks)
+	self.processForms(body, url, sqliChecks)
 }
 
-func (s *Scanner) processLinks(body []byte, baseURL string, depth int, sqliChecks chan<- SQLiCheck) {
+func (self *Scanner) processLinks(body []byte, baseURL string, depth int, sqliChecks chan<- SQLiCheck) {
 	links, _ := utils.ExtractLinks(body, baseURL)
 	for _, link := range links {
 		link, err := utils.StripFragment(link)
-		if err != nil || !utils.IsSameHost(link, baseURL) || s.isIgnoredResource(link) || s.isVisited(link) {
+		if err != nil || !utils.IsSameHost(link, baseURL) || self.isIgnoredResource(link) || self.isVisited(link) {
 			continue
 		}
 
 		if depth > 0 {
-			s.wg.Add(1)
-			s.semaphore <- struct{}{}
-			go s.crawl(link, depth-1, sqliChecks)
+			self.wg.Add(1)
+			self.sem <- struct{}{}
+			go self.crawl(link, depth-1, sqliChecks)
 		}
 
 		checkURL, checkParams, _ := utils.SplitURLParams(link)
 		logger.Debugf("Split URL params: %s, %v", checkURL, checkParams)
 
 		if len(checkParams) == 0 {
-			checkURL = s.injectSQLiPayload(checkURL)
+			checkURL = self.injectSQLiPayload(checkURL)
 		}
 
 		sqliChecks <- SQLiCheck{Method: http.MethodGet, URL: checkURL, Params: checkParams}
 	}
 }
 
-func (s *Scanner) autoFillFields(fields map[string]string) map[string]string {
+func (self *Scanner) autoFillFields(fields map[string]string) map[string]string {
 	defaultValues := map[string]string{
 		"email":    "dummy@gmail.com",
 		"password": "P@ssw0rd123",
@@ -357,7 +359,7 @@ func (s *Scanner) autoFillFields(fields map[string]string) map[string]string {
 	return filledFields
 }
 
-func (s *Scanner) processForms(body []byte, baseURL string, sqliChecks chan<- SQLiCheck) {
+func (self *Scanner) processForms(body []byte, baseURL string, sqliChecks chan<- SQLiCheck) {
 	forms, _ := utils.ExtractForms(body, baseURL)
 	for _, form := range forms {
 		// Пропускаем формы, ведущие на сторонние домены
@@ -365,11 +367,11 @@ func (s *Scanner) processForms(body []byte, baseURL string, sqliChecks chan<- SQ
 			continue
 		}
 		logger.Debugf("Form found: Method=%s, Action=%s, Fields=%v", form.Method, form.Action, form.Fields)
-		sqliChecks <- SQLiCheck{Method: form.Method, URL: form.Action, Params: s.autoFillFields(form.Fields)}
+		sqliChecks <- SQLiCheck{Method: form.Method, URL: form.Action, Params: self.autoFillFields(form.Fields)}
 	}
 }
 
-func (s *Scanner) injectSQLiPayload(target string) string {
+func (self *Scanner) injectSQLiPayload(target string) string {
 	payload := url.QueryEscape(sqliPayload)
 	if strings.Count(target, "/") > 3 && strings.HasSuffix(target, "/") {
 		return target[:len(target)-1] + payload + "/"
@@ -377,7 +379,7 @@ func (s *Scanner) injectSQLiPayload(target string) string {
 	return target + payload
 }
 
-func (s *Scanner) generateCheckKey(check SQLiCheck) (string, error) {
+func (self *Scanner) generateCheckKey(check SQLiCheck) (string, error) {
 	u, err := url.Parse(check.URL)
 	if err != nil {
 		return "", err
@@ -394,24 +396,24 @@ func (s *Scanner) generateCheckKey(check SQLiCheck) (string, error) {
 	return fmt.Sprintf("%s %s", check.Method, u.String()), nil
 }
 
-func (s *Scanner) checkSQLi(check SQLiCheck, results chan<- ScanResult) {
+func (self *Scanner) checkSQLi(check SQLiCheck, results chan<- ScanResult) {
 	defer func() {
-		<-s.semaphore
-		s.wg.Done()
+		<-self.sem
+		self.wg.Done()
 	}()
 
-	checkKey, err := s.generateCheckKey(check)
+	checkKey, err := self.generateCheckKey(check)
 	if err != nil {
 		logger.Errorf("Generate check key error: %v", err)
 		return
 	}
 
-	if _, loaded := s.checked.LoadOrStore(checkKey, struct{}{}); loaded {
+	if _, loaded := self.checked.LoadOrStore(checkKey, struct{}{}); loaded {
 		logger.Debugf("Skip checked: %s", checkKey)
 		return
 	}
 
-	detected, details := s.detectSQLi(check)
+	detected, details := self.detectSQLi(check)
 	if !detected {
 		return
 	}
@@ -423,9 +425,9 @@ func (s *Scanner) checkSQLi(check SQLiCheck, results chan<- ScanResult) {
 	}
 }
 
-func (s *Scanner) detectSQLi(check SQLiCheck) (bool, SQLiDetails) {
+func (self *Scanner) detectSQLi(check SQLiCheck) (bool, SQLiDetails) {
 	handle := func(params map[string]string) (string, int, string) {
-		body, status, _, _ := s.sendRequest(check.Method, check.URL, params)
+		body, status, _, _ := self.sendRequest(check.Method, check.URL, params)
 		htmlContent := string(body)
 		errorMessage := sqlErrorPattern.FindString(htmlContent)
 		if errorMessage == "" {
@@ -444,7 +446,7 @@ func (s *Scanner) detectSQLi(check SQLiCheck) (bool, SQLiDetails) {
 	} else {
 		count := 0
 		for param := range check.Params {
-			if count >= s.maxCheckParams {
+			if count >= self.maxCheckParams {
 				break
 			}
 			params := utils.CopyStringMap(check.Params)
@@ -460,7 +462,7 @@ func (s *Scanner) detectSQLi(check SQLiCheck) (bool, SQLiDetails) {
 	return false, SQLiDetails{}
 }
 
-func (s *Scanner) Scan(urls []string) <-chan ScanResult {
+func (self *Scanner) Scan(urls []string) <-chan ScanResult {
 	logger.Debugf("Scanning %d URLs", len(urls))
 	sqliChecks := make(chan SQLiCheck)
 	results := make(chan ScanResult)
@@ -471,47 +473,47 @@ func (s *Scanner) Scan(urls []string) <-chan ScanResult {
 		}()
 		go func() {
 			for check := range sqliChecks {
-				s.wg.Add(1)
-				s.semaphore <- struct{}{}
-				go s.checkSQLi(check, results)
+				self.wg.Add(1)
+				self.sem <- struct{}{}
+				go self.checkSQLi(check, results)
 			}
 		}()
 		for _, url := range urls {
-			s.wg.Add(1)
-			s.semaphore <- struct{}{}
-			go s.crawl(url, s.crawlDepth, sqliChecks)
+			self.wg.Add(1)
+			self.sem <- struct{}{}
+			go self.crawl(url, self.crawlDepth, sqliChecks)
 		}
-		s.wg.Wait()
+		self.wg.Wait()
 	}()
 	return results
 }
 
-func (s *Scanner) setHeaders(req *retryablehttp.Request) {
+func (self *Scanner) setHeaders(req *retryablehttp.Request) {
 	headers := map[string]string{
 		"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
 		"Accept-Language": "en-US,en;q=0.8",
-		"User-Agent":      s.userAgent,
+		"User-Agent":      self.userAgent,
 	}
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
 }
 
-func (s *Scanner) isLimitReached(url string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (self *Scanner) isLimitReached(url string) bool {
+	self.mu.Lock()
+	defer self.mu.Unlock()
 	host := utils.ExtractHost(url)
-	//logger.Debugf("Requests for %s %s: %d", url, host, s.hostVisits[host])
-	s.hostVisits[host]++
-	return s.hostVisits[host] > s.maxInternalLinks
+	//logger.Debugf("Requests for %s %s: %d", url, host, self.hostVisits[host])
+	self.hostVisits[host]++
+	return self.hostVisits[host] > self.maxInternalLinks
 }
 
-func (s *Scanner) setVisited(url string) {
-	s.visited.Store(url, struct{}{})
+func (self *Scanner) setVisited(url string) {
+	self.visited.Store(url, struct{}{})
 }
 
-func (s *Scanner) isVisited(url string) bool {
-	_, ok := s.visited.Load(url)
+func (self *Scanner) isVisited(url string) bool {
+	_, ok := self.visited.Load(url)
 	return ok
 }
 
@@ -522,7 +524,7 @@ var ignoredExtensions = []string{
 	".mp4", ".avi", ".mov", ".exe", ".dmg",
 }
 
-func (s *Scanner) isIgnoredResource(inputURL string) bool {
+func (self *Scanner) isIgnoredResource(inputURL string) bool {
 	parsed, err := url.Parse(inputURL)
 	if err != nil {
 		return false
