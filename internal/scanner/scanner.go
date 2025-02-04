@@ -78,7 +78,18 @@ func NewScanner(opts ...Option) *Scanner {
 
 	// Отключаем redirect
 	client.HTTPClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
+		// Этот фрагмент вроде не нужен, но на всякий случай
+		if len(via) == 0 {
+			return nil // Первый запрос, редиректов ещё не было
+		}
+
+		prevReq := via[len(via)-1] // Последний запрос перед редиректом
+
+		if prevReq.URL.Host != req.URL.Host {
+			return http.ErrUseLastResponse // Блокируем редирект на другой хост
+		}
+
+		return nil // Разрешаем редирект
 	}
 
 	scanner := &Scanner{
@@ -228,7 +239,10 @@ func (self *Scanner) increaseHostErrors(host string) {
 }
 
 func (self *Scanner) sendRequest(method, url string, params map[string]string) ([]byte, int, http.Header, error) {
-	host := utils.ExtractHost(url)
+	host, err := utils.ExtractHost(url)
+	if err != nil {
+		return nil, 0, nil, err
+	}
 	if self.isHostErrorLimit(host) {
 		return nil, 0, nil, fmt.Errorf("host error limit exceeded")
 	}
@@ -503,7 +517,10 @@ func (self *Scanner) setHeaders(req *retryablehttp.Request) {
 func (self *Scanner) isLimitReached(url string) bool {
 	self.mu.Lock()
 	defer self.mu.Unlock()
-	host := utils.ExtractHost(url)
+	host, err := utils.ExtractHost(url)
+	if err != nil {
+		return false
+	}
 	//logger.Debugf("Requests for %s %s: %d", url, host, self.hostVisits[host])
 	self.hostVisits[host]++
 	return self.hostVisits[host] > self.maxInternalLinks

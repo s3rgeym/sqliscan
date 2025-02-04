@@ -191,9 +191,12 @@ func ExtractTitle(htmlContent string) string {
 	return html.UnescapeString(matches[1])
 }
 
-func ExtractHost(inputURL string) string {
-	parsed, _ := url.Parse(inputURL)
-	return NormalizePort(parsed.Host, parsed.Scheme)
+func ExtractHost(inputURL string) (string, error) {
+	parsed, err := url.Parse(inputURL)
+	if err != nil {
+		return "", err
+	}
+	return NormalizePort(parsed.Host, parsed.Scheme), nil
 }
 
 func IsSameHost(targetURL, baseURL string) bool {
