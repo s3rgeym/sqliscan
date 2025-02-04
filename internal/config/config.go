@@ -30,7 +30,7 @@ func registerFlags(cfg *Config) {
 	flag.DurationVar(&cfg.Timeout, "t", 15*time.Second, "Request timeout duration")
 	flag.IntVar(&cfg.ConcurrencyLimit, "c", 20, "Number of concurrent requests")
 	flag.IntVar(&cfg.CrawlDepth, "depth", 3, "Maximum link depth for crawling")
-	flag.IntVar(&cfg.MaxCheckParams, "check-params", 5, "Maximum number of check parameters")
+	flag.IntVar(&cfg.MaxCheckParams, "check-params", 10, "Maximum number of check parameters")
 	flag.IntVar(&cfg.MaxHostErrors, "host-errors", 50, "Max allowed errors per host")
 	flag.IntVar(&cfg.MaxInternalLinks, "internal-links", 150, "Max number of internal links to follow")
 	flag.IntVar(&cfg.MaxRetries, "retries", 3, "Retry attempts per request")

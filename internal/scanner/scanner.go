@@ -85,12 +85,13 @@ func NewScanner(opts ...Option) *Scanner {
 		client:           client,
 		concurrencyLimit: 20,
 		crawlDepth:       3,
+		hostErrors:       make(map[string]int),
 		hostVisits:       make(map[string]int),
 		lim:              rate.NewLimiter(rate.Every(50*time.Millisecond), 1),
-		maxCheckParams:   5,
+		maxCheckParams:   10,
 		maxHostErrors:    50,
 		maxInternalLinks: 150,
-		skipCMSCheck:     true,
+		skipCMSCheck:     false,
 		userAgent:        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 	}
 	for _, opt := range opts {
