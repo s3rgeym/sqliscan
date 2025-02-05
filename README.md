@@ -31,6 +31,8 @@ To view all available flags and their descriptions, run:
 sqliscan -h
 ```
 
-### Download
+---
 
-You can download executables for Windows, Linux and MacOS from [releases](../../releases).
+## 📥 Download
+
+You can download executables for 🪟 Windows, 🐧 Linux, and 🍎 macOS from [📦 Releases](../../releases).
