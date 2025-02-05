@@ -9,7 +9,7 @@
 - **Customizable Request Parameters** 🛠️: Supports proxy settings, custom user-agents, timeouts, and more for tailored scans.  
 - **Logging Support** 📝: Offers different verbosity levels (`info`, `debug`, etc.) to suit your needs.  
 - **Configurable Depth and Retry Logic** 🔍: Ensures thorough testing with adjustable scan depth and retry options.  
-- **Cloudflare Bypass** 🌥️: Handles applications protected by Cloudflare's firewall for uninterrupted scanning.  
+- **Cloudflare Challenge Bypass** 🌥️: Handles applications protected by Cloudflare's firewall for uninterrupted scanning.  
 
 ---
 
