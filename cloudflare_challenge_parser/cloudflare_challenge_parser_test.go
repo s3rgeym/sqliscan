@@ -38,8 +38,8 @@ func TestParseCloudflareChallenge(t *testing.T) {
 	}
 
 	// Проверка значений.
-	assertEqual(t, challenge.West, 7579626, "west value mismatch")
-	assertEqual(t, challenge.East, 15617780, "east value mismatch")
+	assertEqual(t, challenge.West, int64(7579626), "west value mismatch")
+	assertEqual(t, challenge.East, int64(15617780), "east value mismatch")
 	assertEqual(t, challenge.Action, "/z0f76a1d14fd21a8fb5fd0d03e0fdc3d3cedae52f", "action value mismatch")
 }
 
