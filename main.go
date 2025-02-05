@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"sqliscan/internal/config"
-	"sqliscan/internal/logger"
-	"sqliscan/internal/scanner"
-	"sqliscan/internal/utils"
+	"sqliscan/config"
+	"sqliscan/logger"
+	"sqliscan/scanner"
+	"sqliscan/utils"
 )
 
 func main() {

@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -9,8 +10,9 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"regexp"
-	"sqliscan/internal/logger"
-	"sqliscan/internal/utils"
+	"sqliscan/cloudflare_challenge_parser"
+	"sqliscan/logger"
+	"sqliscan/utils"
 	"strings"
 	"sync"
 	"time"
@@ -22,8 +24,10 @@ import (
 var (
 	// null-байт служит индикатором конца строки в C/C++
 	//sqliPayload     = "'\"\x00"
-	sqliPayload     = "'\""
-	sqlErrorPattern = regexp.MustCompile(`SQL syntax.*MySQL|Unclosed quotation mark.*SQL Server|You have an error in your SQL syntax|Warning.*pg_query|SQLite.*near|syntax error`)
+	sqliPayload = "'\""
+
+	// Тут только ошибки, которые возникают при неожиданной кавычке
+	sqlErrorPattern = regexp.MustCompile(`You have an error in your SQL syntax|Unclosed quote at position|<b>(?:Fatal error|Warning)</b>:|:[^:]*syntax error|Unterminated quoted string at or near|Unclosed quotation mark after the character string|quoted string not properly terminated|Incorrect syntax near|could not execute query|bad SQL grammar`)
 )
 
 type Scanner struct {
@@ -256,6 +260,23 @@ func (self *Scanner) sendRequest(method, url string, params map[string]string) (
 	if err != nil {
 		return nil, 0, nil, err
 	}
+
+	if bytes.Contains(body, []byte("<title>One moment, please...</title>")) {
+		logger.Debugf("Cloudflare challenge detected: %s", url)
+
+		challenge, err := cloudflare_challenge_parser.ParseCloudflareChallenge(string(body))
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		actionURL, err := utils.URLJoin(url, challenge.Action)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		return self.sendRequest(challenge.Method, actionURL, map[string]string{
+			"wsidchk": fmt.Sprintf("%d", challenge.Wsidchk),
+		})
+	}
+
 	logger.Debugf("%d - %s %s", resp.StatusCode, method, url)
 	return body, resp.StatusCode, resp.Header, nil
 }
