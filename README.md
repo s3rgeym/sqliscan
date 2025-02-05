@@ -30,3 +30,7 @@ To view all available flags and their descriptions, run:
 ```sh
 sqliscan -h
 ```
+
+### Download
+
+You can download executables for Windows, Linux and MacOS from [releases](../../releases).
