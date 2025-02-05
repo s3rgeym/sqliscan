@@ -224,12 +224,6 @@ func (self *Scanner) makeRequest(method, targetURL string, params map[string]str
 		return nil, 0, nil, fmt.Errorf("host error limit exceeded")
 	}
 
-	if err := self.lim.Wait(context.Background()); err != nil {
-		logger.Errorf("Rate limiter error: %v", err)
-		self.increaseHostErrors(host)
-		return nil, 0, nil, err
-	}
-
 	method = strings.ToUpper(method)
 	req, err := retryablehttp.NewRequest(method, targetURL, nil)
 	if err != nil {
@@ -251,6 +245,12 @@ func (self *Scanner) makeRequest(method, targetURL string, params map[string]str
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Body = io.NopCloser(strings.NewReader(form.Encode()))
+	}
+
+	if err := self.lim.Wait(context.Background()); err != nil {
+		logger.Errorf("Rate limiter error: %v", err)
+		self.increaseHostErrors(host)
+		return nil, 0, nil, err
 	}
 
 	resp, err := self.client.Do(req)
