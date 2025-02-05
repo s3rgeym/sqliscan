@@ -10,7 +10,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"regexp"
-	"sqliscan/cloudflare_challenge_parser"
+	"sqliscan/cloudflare_jschallenge"
 	"sqliscan/logger"
 	"sqliscan/utils"
 	"strings"
@@ -284,7 +284,8 @@ func (self *Scanner) sendRequest(method, url string, params map[string]string) (
 	if self.isCloudflareChallenge(body) {
 		logger.Warnf("Cloudflare challenge detected: %s", url)
 
-		challenge, err := cloudflare_challenge_parser.ParseCloudflareChallenge(string(body))
+		challenge, err := cloudflare_jschallenge.ParseChallenge(string(body))
+
 		if err != nil {
 			return nil, 0, nil, err
 		}
@@ -304,11 +305,18 @@ func (self *Scanner) sendRequest(method, url string, params map[string]string) (
 
 func (self *Scanner) detectCMS(body string) string {
 	indicators := [][]string{
+		// https://stackcrawler.com/learn
 		{"Wordpress", "/wp-content/"},
-		{"Joomla", "Joomla! - Open Source Content Management"},
+		{"Joomla", "content=\"Joomla! - Open Source Content Management\""},
 		{"Drupal", "/sites/all/modules/"},
-		{"Tilda", "https://static.tildacdn.com/"},
-		// TODO: добавить еще
+		{"Tilda", "//static.tildacdn.com/"},
+		{"Bitrix", "/bitrix/templates/"},
+		{"Shopify", "//cdn.shopify.com/"},
+		{"Magento", "Mage.Cookies"},
+		{"PrestaShop", "content=\"PrestaShop\""},
+		{"DLE", "DataLife Engine"},
+		{"Blogger", ".blogspot.com/"},
+		{"Wix", "content=\"Wix.com Website Builder\""},
 	}
 
 	for _, indicator := range indicators {
