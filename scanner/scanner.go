@@ -230,8 +230,6 @@ func (self *Scanner) makeRequest(method, targetURL string, params map[string]str
 		return nil, 0, nil, err
 	}
 
-	self.setHeaders(req)
-
 	if method == http.MethodGet || method == http.MethodHead {
 		q := req.URL.Query()
 		for key, value := range params {
@@ -252,6 +250,8 @@ func (self *Scanner) makeRequest(method, targetURL string, params map[string]str
 		self.increaseHostErrors(host)
 		return nil, 0, nil, err
 	}
+
+	self.setHeaders(req)
 
 	resp, err := self.client.Do(req)
 	if err != nil {
