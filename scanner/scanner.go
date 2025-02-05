@@ -84,21 +84,21 @@ func NewScanner(opts ...Option) *Scanner {
 	client.HTTPClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		// Этот фрагмент вроде не нужен, но на всякий случай
 		if len(via) == 0 {
-			return nil // Первый запрос, редиректов ещё не было
+			return nil
 		}
 
-		prevReq := via[len(via)-1] // Последний запрос перед редиректом
+		prevReq := via[len(via)-1]
 
 		if prevReq.URL.Host != req.URL.Host {
-			return http.ErrUseLastResponse // Блокируем редирект на другой хост
+			return http.ErrUseLastResponse
 		}
 
-		return nil // Разрешаем редирект
+		return nil
 	}
 
-	scanner := &Scanner{
+	s := &Scanner{
 		client:           client,
-		concurrencyLimit: 10,
+		concurrencyLimit: 20,
 		crawlDepth:       3,
 		hostErrors:       make(map[string]int),
 		hostVisits:       make(map[string]int),
@@ -110,10 +110,10 @@ func NewScanner(opts ...Option) *Scanner {
 		userAgent:        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 	}
 	for _, opt := range opts {
-		opt(scanner)
+		opt(s)
 	}
-	scanner.sem = make(chan struct{}, scanner.concurrencyLimit)
-	return scanner
+	s.sem = make(chan struct{}, s.concurrencyLimit)
+	return s
 }
 
 func WithConcurrencyLimit(limit int) Option {
@@ -198,34 +198,6 @@ func WithSkipCMSCheck(check bool) Option {
 	}
 }
 
-func (self *Scanner) performRequest(method, target string, params map[string]string) (*http.Response, error) {
-	if err := self.lim.Wait(context.Background()); err != nil {
-		logger.Errorf("Rate limiter error: %v", err)
-		return nil, err
-	}
-	method = strings.ToUpper(method)
-	req, err := retryablehttp.NewRequest(method, target, nil)
-	if err != nil {
-		return nil, err
-	}
-	self.setHeaders(req)
-	if method == http.MethodGet || method == http.MethodHead {
-		q := req.URL.Query()
-		for key, value := range params {
-			q.Add(key, value)
-		}
-		req.URL.RawQuery = q.Encode()
-	} else {
-		form := url.Values{}
-		for key, value := range params {
-			form.Add(key, value)
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Body = io.NopCloser(strings.NewReader(form.Encode()))
-	}
-	return self.client.Do(req)
-}
-
 func (self *Scanner) isHostErrorLimit(host string) bool {
 	self.mu.Lock()
 	defer self.mu.Unlock()
@@ -242,43 +214,92 @@ func (self *Scanner) increaseHostErrors(host string) {
 	self.hostErrors[host]++
 }
 
-func (self *Scanner) sendRequest(method, url string, params map[string]string) ([]byte, int, http.Header, error) {
-	host, err := utils.ExtractHost(url)
-	if err != nil {
-		return nil, 0, nil, err
-	}
-	if self.isHostErrorLimit(host) {
-		return nil, 0, nil, fmt.Errorf("host error limit exceeded")
-	}
-	resp, err := self.performRequest(method, url, params)
-	if err != nil {
-		self.increaseHostErrors(host)
-		return nil, 0, nil, err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+func (self *Scanner) makeRequest(method, targetURL string, params map[string]string) ([]byte, int, http.Header, error) {
+	host, err := utils.ExtractHost(targetURL)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 
-	if bytes.Contains(body, []byte("<title>One moment, please...</title>")) {
-		logger.Debugf("Cloudflare challenge detected: %s", url)
+	if self.isHostErrorLimit(host) {
+		return nil, 0, nil, fmt.Errorf("host error limit exceeded")
+	}
+
+	if err := self.lim.Wait(context.Background()); err != nil {
+		logger.Errorf("Rate limiter error: %v", err)
+		self.increaseHostErrors(host)
+		return nil, 0, nil, err
+	}
+
+	method = strings.ToUpper(method)
+	req, err := retryablehttp.NewRequest(method, targetURL, nil)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+
+	self.setHeaders(req)
+
+	if method == http.MethodGet || method == http.MethodHead {
+		q := req.URL.Query()
+		for key, value := range params {
+			q.Add(key, value)
+		}
+		req.URL.RawQuery = q.Encode()
+	} else {
+		form := url.Values{}
+		for key, value := range params {
+			form.Add(key, value)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Body = io.NopCloser(strings.NewReader(form.Encode()))
+	}
+
+	resp, err := self.client.Do(req)
+	if err != nil {
+		self.increaseHostErrors(host)
+		return nil, 0, nil, err
+	}
+
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		self.increaseHostErrors(host)
+		return nil, 0, nil, err
+	}
+
+	logger.Debugf("%d - %s %s", resp.StatusCode, method, targetURL)
+	return body, resp.StatusCode, resp.Header, nil
+}
+
+func (self *Scanner) isCloudflareChallenge(body []byte) bool {
+	return bytes.Contains(body, []byte("<title>One moment, please...</title>"))
+}
+
+func (self *Scanner) sendRequest(method, url string, params map[string]string) ([]byte, int, http.Header, error) {
+	body, status, header, err := self.makeRequest(method, url, params)
+
+	if err != nil {
+		return nil, 0, nil, err
+	}
+
+	if self.isCloudflareChallenge(body) {
+		logger.Warnf("Cloudflare challenge detected: %s", url)
 
 		challenge, err := cloudflare_challenge_parser.ParseCloudflareChallenge(string(body))
 		if err != nil {
 			return nil, 0, nil, err
 		}
+
 		actionURL, err := utils.URLJoin(url, challenge.Action)
 		if err != nil {
 			return nil, 0, nil, err
 		}
-		return self.sendRequest(challenge.Method, actionURL, map[string]string{
+
+		return self.makeRequest(challenge.Method, actionURL, map[string]string{
 			"wsidchk": fmt.Sprintf("%d", challenge.Wsidchk),
 		})
 	}
 
-	logger.Debugf("%d - %s %s", resp.StatusCode, method, url)
-	return body, resp.StatusCode, resp.Header, nil
+	return body, status, header, nil
 }
 
 func (self *Scanner) detectCMS(body string) string {

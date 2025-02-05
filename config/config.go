@@ -28,7 +28,7 @@ func registerFlags(cfg *Config) {
 	flag.BoolVar(&cfg.SkipVerify, "skip-verify", false, "Disable SSL certificate validation")
 	flag.DurationVar(&cfg.RateLimitInterval, "r", 50*time.Millisecond, "Delay between requests")
 	flag.DurationVar(&cfg.Timeout, "t", 15*time.Second, "Request timeout duration")
-	flag.IntVar(&cfg.ConcurrencyLimit, "c", 10, "Number of concurrent requests")
+	flag.IntVar(&cfg.ConcurrencyLimit, "c", 20, "Number of concurrent requests")
 	flag.IntVar(&cfg.CrawlDepth, "depth", 3, "Maximum link depth for crawling")
 	flag.IntVar(&cfg.MaxCheckParams, "check-params", 10, "Maximum number of check parameters")
 	flag.IntVar(&cfg.MaxHostErrors, "host-errors", 30, "Max allowed errors per host")
