@@ -3,6 +3,7 @@
 **SQLiScan** is a command-line tool for detecting SQL injection vulnerabilities in web applications. It processes a list of URLs, sends crafted requests, and analyzes responses to identify potential security risks.  
 
 ## Features  
+
 - **Automated SQL injection detection** across multiple URLs  
 - **Concurrency control** for efficient scanning  
 - **Customizable request parameters** (proxy, user-agent, timeouts, etc.)  
@@ -12,14 +13,17 @@
   
 ## Usage  
 
-### Basic Scan  
 ```sh
-sqliscan -i urls.txt -o results.json -log debug
-```  
-Scans URLs from `urls.txt` and saves the results to `results.json`.  
+sqliscan -i urls.txt -o sqli.json -log debug -skip-verify
+```   
 
-### Help  
+- `-i` specifies the input file containing URLs to scan
+- `-o` sets the output file for scan results
+- `-log debug` enables detailed logging
+- `-skip-verify` skips SSL certificate verification
+
+All flags:
+
 ```sh
 sqliscan -h
-```  
-Displays all available options.  
+```
