@@ -16,7 +16,7 @@ type ChallengeData struct {
 // vm = goja.New()
 //)
 
-// Супер быстрый однопроходной парсер значений переменных west и east на странице с 
+// Супер быстрый однопроходной парсер значений переменных west и east на странице с
 // проверкой от Cloudflare
 func ParseExpression(expression string) (int, error) {
 	index := 0
@@ -30,6 +30,8 @@ func ParseExpression(expression string) (int, error) {
 	}
 
 	result := 0
+
+	// +((+!+[]+!![]+!![]...)+(+!+[]...+!![]+[])+(+![]...+[]))
 	if !accept("+(") {
 		return 0, fmt.Errorf("expression must starts with '+('")
 	}
@@ -53,6 +55,7 @@ func ParseExpression(expression string) (int, error) {
 			}
 		}
 
+		// Между выражениями (+!+[]...) должен быть +
 		if !accept("+") {
 			break
 		}
@@ -96,14 +99,8 @@ func ParseWestEast(challengeBody string) (int, int, error) {
 }
 
 func ParseChallenge(challengeBody string) (*ChallengeData, error) {
-	west, east, err := ParseWestEast(challengeBody)
-
-	if err != nil {
-		return nil, err
-	}
-
-	reAction := regexp.MustCompile(`action="([^"]+)"`)
-	reMethod := regexp.MustCompile(`method="([^"]+)"`)
+	// west, _ := westValue.Export().(int64)
+	// east, _ := eastValue.Export().(int64)
 
 	// westValue, err := vm.RunString(westExpr)
 	// if err != nil {
@@ -115,6 +112,15 @@ func ParseChallenge(challengeBody string) (*ChallengeData, error) {
 	// 	return nil, fmt.Errorf("failed to parse east: %v", err)
 	// }
 
+	west, east, err := ParseWestEast(challengeBody)
+
+	if err != nil {
+		return nil, err
+	}
+
+	reAction := regexp.MustCompile(`action="([^"]+)"`)
+	reMethod := regexp.MustCompile(`method="([^"]+)"`)
+
 	actionMatch := reAction.FindStringSubmatch(challengeBody)
 	methodMatch := reMethod.FindStringSubmatch(challengeBody)
 	if len(actionMatch) < 2 || len(methodMatch) < 2 {
@@ -123,8 +129,6 @@ func ParseChallenge(challengeBody string) (*ChallengeData, error) {
 
 	action := actionMatch[1]
 	method := methodMatch[1]
-	// west, _ := westValue.Export().(int64)
-	// east, _ := eastValue.Export().(int64)
 
 	return &ChallengeData{
 		Wsidchk: west + east,
