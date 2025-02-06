@@ -31,7 +31,12 @@ func ParseExpression(expression string) (int, error) {
 
 	result := 0
 
-	// +((+!+[]+!![]+!![]...)+(+!+[]...+!![]+[])+(+![]...+[]))
+	// +![] => 0
+	// +!+[] => 1
+	// !![] => true
+	// 1 + true => 2
+	// 2 + [] => '2'
+	// +((+!+[]+!![]+...+!![])+(+!+[]+...+!![]+[])+...+(+![]+...+[]))
 	if !accept("+(") {
 		return 0, fmt.Errorf("expression must starts with '+('")
 	}
