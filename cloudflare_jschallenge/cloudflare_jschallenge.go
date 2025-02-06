@@ -12,9 +12,9 @@ type ChallengeData struct {
 	Method  string
 }
 
-var (
+//var (
 // vm = goja.New()
-)
+//)
 
 // Супер быстрый парсер значений переменных west и east на странице с проверкой
 // от Cloudflare
@@ -53,8 +53,8 @@ func ParseExpression(expression string) (int, error) {
 			}
 		}
 
-		if accept("+") {
-			continue
+		if !accept("+") {
+			break
 		}
 	}
 
