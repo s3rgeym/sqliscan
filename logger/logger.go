@@ -27,17 +27,13 @@ func Infof(format string, args ...interface{}) {
 }
 
 func Warnf(format string, args ...interface{}) {
-	logger.Warnf(format, args...)
+	logger.Warnf("❗ " + format, args...)
 }
 
 func Errorf(format string, args ...interface{}) {
-	logger.Errorf(format, args...)
+	logger.Errorf("❌ " + format, args...)
 }
 
 func Fatalf(format string, args ...interface{}) {
-	logger.Fatalf(format, args...)
-}
-
-func Info(args ...interface{}) {
-	logger.Info(args...)
+	logger.Fatalf("⛔ " + format, args...)
 }
