@@ -52,6 +52,11 @@ type Scanner struct {
 
 type Option func(*Scanner)
 
+type ResponseWrapper struct {
+	http.Response
+	Body []byte
+}
+
 type SQLiCheck struct {
 	Method  string            `json:"method"`
 	URL     string            `json:"url"`
@@ -216,14 +221,7 @@ func (self *Scanner) increaseHostErrors(host string) {
 	self.hostErrors[host]++
 }
 
-type Response struct {
-	URL        *url.URL
-	StatusCode int
-	Body       []byte
-	Header     http.Header
-}
-
-func (self *Scanner) makeRequest(method, targetURL string, params map[string]string, referer string) (*Response, error) {
+func (self *Scanner) makeRequest(method, targetURL string, params map[string]string, referer string) (*ResponseWrapper, error) {
 	host, err := utils.ExtractHost(targetURL)
 	if err != nil {
 		return nil, err
@@ -268,20 +266,20 @@ func (self *Scanner) makeRequest(method, targetURL string, params map[string]str
 		return nil, err
 	}
 	logger.Debugf("%d - %s %s - %s", resp.StatusCode, method, targetURL, referer)
-	return &Response{Body: body, StatusCode: resp.StatusCode, URL: resp.Request.URL, Header: resp.Header}, nil
+	return &ResponseWrapper{Body: body, Response: *resp}, nil
 }
 
-func (self *Scanner) isCloudflareChallenge(resp *Response) bool {
+func (self *Scanner) isCloudflareChallenge(resp *ResponseWrapper) bool {
 	return bytes.Contains(resp.Body, []byte("<title>One moment, please...</title>"))
 }
 
-func (self *Scanner) sendRequest(method, url string, params map[string]string, referer string) (*Response, error) {
+func (self *Scanner) sendRequest(method, url string, params map[string]string, referer string) (*ResponseWrapper, error) {
 	resp, err := self.makeRequest(method, url, params, referer)
 	if err != nil {
 		return nil, err
 	}
 	if self.isCloudflareChallenge(resp) {
-		responseURL := resp.URL.String()
+		responseURL := resp.Request.URL.String()
 		logger.Warnf("Cloudflare challenge detected: %s", responseURL)
 		challenge, err := cloudflare_jschallenge.ParseChallenge(string(resp.Body))
 		if err != nil {
@@ -340,7 +338,7 @@ func (self *Scanner) crawl(url string, depth int, referer string, sqliChecks cha
 	}
 
 	self.setVisited(url)
-	currentURL := resp.URL.String()
+	currentURL := resp.Request.URL.String()
 	self.setVisited(currentURL)
 
 	if resp.StatusCode != http.StatusOK {
@@ -365,7 +363,7 @@ func (self *Scanner) crawl(url string, depth int, referer string, sqliChecks cha
 	self.processForms(resp, currentURL, sqliChecks)
 }
 
-func (self *Scanner) processLinks(resp *Response, baseURL string, depth int, sqliChecks chan<- SQLiCheck) {
+func (self *Scanner) processLinks(resp *ResponseWrapper, baseURL string, depth int, sqliChecks chan<- SQLiCheck) {
 	links, _ := utils.ExtractLinks(resp.Body, baseURL)
 	for _, link := range links {
 		link, err := utils.StripFragment(link)
@@ -380,7 +378,7 @@ func (self *Scanner) processLinks(resp *Response, baseURL string, depth int, sql
 		}
 
 		checkURL, checkParams, _ := utils.SplitURLParams(link)
-		logger.Debugf("Split URL params: %s, %v", checkURL, checkParams)
+		//logger.Debugf("Split URL params: %s, %v", checkURL, checkParams)
 
 		if len(checkParams) == 0 {
 			checkURL = self.injectSQLiPayload(checkURL)
@@ -423,7 +421,7 @@ func (self *Scanner) autoFillFields(fields map[string]string) map[string]string 
 	return filledFields
 }
 
-func (self *Scanner) processForms(resp *Response, baseURL string, sqliChecks chan<- SQLiCheck) {
+func (self *Scanner) processForms(resp *ResponseWrapper, baseURL string, sqliChecks chan<- SQLiCheck) {
 	forms, _ := utils.ExtractForms(resp.Body, baseURL)
 	for _, form := range forms {
 		// Пропускаем формы, ведущие на сторонние домены
