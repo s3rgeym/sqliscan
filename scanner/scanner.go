@@ -21,13 +21,16 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var (
+const (
+	defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	// Некоторые WAF блокируют идущие подряд запросы без Referer, поэтому мы передаем его всегда
 	defaultReferer = "https://www.google.com/"
-	// null-байт служит индикатором конца строки в C/C++
-	//sqliPayload     = "'\"\x00"
-	sqliPayload = "'\""
-
-	// Тут только ошибки, которые возникают при неожиданной кавычке
+	quotes = "'\""
+	nullByte = "\x00"
+)
+	
+var (
+	// Тут только ошибки, которые возникают при неожиданной кавычке в SQL
 	sqlErrorPattern = regexp.MustCompile(`You have an error in your SQL syntax|syntax error at or near|Unclosed quote at position|Unterminated quoted string at or near|Unclosed quotation mark after the character string|quoted string not properly terminated|Incorrect syntax near|could not execute query|bad SQL grammar|<b>(?:Fatal error|Warning)</b>:`)
 )
 
@@ -114,7 +117,7 @@ func NewScanner(opts ...Option) *Scanner {
 		maxHostErrors:    30,
 		maxInternalLinks: 150,
 		skipCMSCheck:     false,
-		userAgent:        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+		userAgent:        defaultUserAgent,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -221,6 +224,10 @@ func (self *Scanner) increaseHostErrors(host string) {
 	self.hostErrors[host]++
 }
 
+func (self *Scanner) hasBody(method string) bool {
+	return  method != http.MethodGet && method != http.MethodHead
+}
+
 func (self *Scanner) makeRequest(method, targetURL string, params map[string]string, referer string) (*ResponseWrapper, error) {
 	host, err := utils.ExtractHost(targetURL)
 	if err != nil {
@@ -234,7 +241,7 @@ func (self *Scanner) makeRequest(method, targetURL string, params map[string]str
 	if err != nil {
 		return nil, err
 	}
-	if method == http.MethodGet || method == http.MethodHead {
+	if !self.hasBody(method) {
 		q := req.URL.Query()
 		for key, value := range params {
 			q.Add(key, value)
@@ -300,16 +307,22 @@ func (self *Scanner) detectCMS(body string) string {
 	indicators := [][]string{
 		// https://stackcrawler.com/learn
 		{"Wordpress", "/wp-content/"},
-		{"Joomla", "content=\"Joomla! - Open Source Content Management\""},
+		// В meta generator
+		{"Joomla", "Joomla! - Open Source Content Management"},
 		{"Drupal", "/sites/all/modules/"},
-		{"Tilda", "//static.tildacdn.com/"},
+		{"DLE", "DataLife Engine"},
 		{"Bitrix", "/bitrix/templates/"},
 		{"Shopify", "//cdn.shopify.com/"},
+		// Название JS переменной
 		{"Magento", "Mage.Cookies"},
+		// В meta generator
 		{"PrestaShop", "content=\"PrestaShop\""},
-		{"DLE", "DataLife Engine"},
-		{"Blogger", ".blogspot.com/"},
-		{"Wix", "content=\"Wix.com Website Builder\""},
+		// Далее пошли конструкторы
+		{"Tilda", "//static.tildacdn.com/"},
+		// В meta generator
+		{"Wix", "Wix.com Website Builder"},
+		// Им никто не пользуется все равно
+		//{"Blogger", ".blogspot.com/"},
 	}
 
 	for _, indicator := range indicators {
@@ -433,8 +446,14 @@ func (self *Scanner) processForms(resp *ResponseWrapper, baseURL string, sqliChe
 	}
 }
 
+// Добавляет кавычки в конец URL либо перед финальным "/"
 func (self *Scanner) injectSQLiPayload(rawURL string) string {
-	payload := url.QueryEscape(sqliPayload)
+	// null-bytes в C/C++ используется для обозначения конца строки (которая не более
+	// чем массив байт). Подставив %00 в какой-то параметр, мы можем "обрезать" строку
+	// и выполнить произвольный SQL-запрос. Но есть одно НО: сайты, как правило,
+	// работают за Nginx, который отдает 404, если %00 встречается в самом URL.
+	// Поэтому его нужно кодировать 2 раза, то есть использовать %2500.
+	payload := url.QueryEscape(quotes + url.QueryEscape(nullByte))
 	if strings.Count(rawURL, "/") > 3 && strings.HasSuffix(rawURL, "/") {
 		return rawURL[:len(rawURL)-1] + payload + "/"
 	}
@@ -487,7 +506,7 @@ func (self *Scanner) checkSQLi(check SQLiCheck, results chan<- ScanResult) {
 	}
 }
 
-func (self *Scanner) detectSQLi(check SQLiCheck) (bool, SQLiDetails) {
+func (self *Scanner) detectSQLi(check SQLiCheck) (bool, *SQLiDetails) {
 	handle := func(params map[string]string) (string, int, string) {
 		resp, _ := self.sendRequest(check.Method, check.URL, params, check.Referer)
 		htmlContent := string(resp.Body)
@@ -503,36 +522,44 @@ func (self *Scanner) detectSQLi(check SQLiCheck) (bool, SQLiDetails) {
 		logger.Debugf("Check SQLi: %s %s", check.Method, check.URL)
 		errorMessage, status, title := handle(nil)
 		if errorMessage != "" {
-			return true, SQLiDetails{ErrorMessage: errorMessage, StatusCode: status, PageTitle: title}
+			return true, &SQLiDetails{ErrorMessage: errorMessage, StatusCode: status, PageTitle: title}
 		}
 	} else {
+		payload := quotes
+		if self.hasBody(check.Method) {
+			payload += nullByte
+		} else {
+			// Тут так же кодируем null-byte, чтобы в итоге он превратился в %2500
+			payload += url.QueryEscape(nullByte)
+		}
 		count := 0
 		for param := range check.Params {
 			if count >= self.maxCheckParams {
 				break
 			}
 			params := utils.CopyStringMap(check.Params)
-			params[param] += sqliPayload
+			params[param] += payload
 			logger.Debugf("Check SQLi: %s %s; param=%q", check.Method, check.URL, param)
 			errorMessage, status, title := handle(params)
 			if errorMessage != "" {
-				return true, SQLiDetails{ErrorMessage: errorMessage, VulnParam: param, PageTitle: title, StatusCode: status}
+				return true, &SQLiDetails{ErrorMessage: errorMessage, VulnParam: param, PageTitle: title, StatusCode: status}
 			}
 			count++
 		}
 	}
-	return false, SQLiDetails{}
+	return false, nil
 }
 
 func (self *Scanner) Scan(urls []string) <-chan ScanResult {
-	logger.Infof("Scanning %d URLs", len(urls))
+	logger.Infof("🚀 Scanning started.")
+	logger.Debugf("🔍 Scanning %d URLs", len(urls))
 	sqliChecks := make(chan SQLiCheck)
 	results := make(chan ScanResult)
-	go func() {
+    	go func() {
 		defer func() {
 			close(sqliChecks)
 			close(results)
-			logger.Infof("Scanning finised!")
+			logger.Infof("✅ Scanning finished!")
 		}()
 		go func() {
 			for check := range sqliChecks {
@@ -585,10 +612,18 @@ func (self *Scanner) isVisited(url string) bool {
 }
 
 var ignoredExtensions = []string{
-	".jpg", ".jpeg", ".png", ".gif", ".bmp",
-	".pdf", ".doc", ".docx", ".xls", ".xlsx",
-	".zip", ".rar", ".tar", ".gz", ".mp3",
-	".mp4", ".avi", ".mov", ".exe", ".dmg",
+    ".aac", ".apk", ".avi", ".bak", ".bin",
+    ".bmp", ".csv", ".dmg", ".doc", ".docx",
+    ".eot", ".epub", ".exe", ".flac", ".flv",
+    ".gif", ".gz", ".ico", ".iso", ".jar",
+    ".jpeg", ".jpg", ".json", ".log", ".m4a",
+    ".mobi", ".mkv", ".mov", ".mp3", ".mp4",
+    ".odt", ".ogg", ".ods", ".pdf", ".png",
+    ".ppt", ".pptx", ".psd", ".rar", ".svg",
+    ".swf", ".tar", ".tiff", ".txt", ".wav",
+    ".webp", ".woff", ".woff2", ".xls", ".xlsx",
+    ".xml", ".zip", ".7z", ".aac", ".ttf",
+    ".otf",
 }
 
 func (self *Scanner) isIgnoredResource(inputURL string) bool {
