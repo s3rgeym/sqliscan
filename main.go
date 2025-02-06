@@ -62,10 +62,10 @@ func main() {
 	results := scan.Scan(urls)
 
 	for result := range results {
-		logger.Infof("SQLi detected: %v", result)
+		logger.Infof("✅ SQLi detected: %v", result)
 		js, err := json.Marshal(result)
 		if err != nil {
-			logger.Errorf("Failed to marshal result: %v", err)
+			logger.Errorf("❌ Failed to marshal result: %v", err)
 			continue
 		}
 		outputFile.Write(js)
