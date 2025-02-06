@@ -559,7 +559,7 @@ func (self *Scanner) Scan(urls []string) <-chan ScanResult {
 		defer func() {
 			close(sqliChecks)
 			close(results)
-			logger.Infof("✅ Scanning finished!")
+			logger.Infof("🎉 Scanning finished!")
 		}()
 		go func() {
 			for check := range sqliChecks {
