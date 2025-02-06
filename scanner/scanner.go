@@ -217,10 +217,10 @@ func (self *Scanner) increaseHostErrors(host string) {
 }
 
 type Response struct {
-    URL        *url.URL
-    StatusCode int
-    Body       []byte
-    Header     http.Header
+	URL        *url.URL
+	StatusCode int
+	Body       []byte
+	Header     http.Header
 }
 
 func (self *Scanner) makeRequest(method, targetURL string, params map[string]string, referer string) (*Response, error) {
@@ -267,7 +267,7 @@ func (self *Scanner) makeRequest(method, targetURL string, params map[string]str
 		self.increaseHostErrors(host)
 		return nil, err
 	}
-	logger.Debugf("%d - %s %s", resp.StatusCode, method, targetURL)
+	logger.Debugf("%d - %s %s - %s", resp.StatusCode, method, targetURL, referer)
 	return &Response{Body: body, StatusCode: resp.StatusCode, URL: resp.Request.URL, Header: resp.Header}, nil
 }
 
@@ -285,7 +285,7 @@ func (self *Scanner) sendRequest(method, url string, params map[string]string, r
 		logger.Warnf("Cloudflare challenge detected: %s", responseURL)
 		challenge, err := cloudflare_jschallenge.ParseChallenge(string(resp.Body))
 		if err != nil {
-		 	return nil, err
+			return nil, err
 		}
 		actionURL, err := utils.URLJoin(responseURL, challenge.Action)
 		if err != nil {
@@ -342,13 +342,12 @@ func (self *Scanner) crawl(url string, depth int, referer string, sqliChecks cha
 	self.setVisited(url)
 	currentURL := resp.URL.String()
 	self.setVisited(currentURL)
-	
+
 	if resp.StatusCode != http.StatusOK {
 		logger.Debugf("Skip %s with status %d", currentURL, resp.StatusCode)
 		return
 	}
 
-	
 	mediaType, _ := utils.GetMediaType(resp.Header)
 	if mediaType != "text/html" {
 		logger.Errorf("Non-HTML response: %s", currentURL)
@@ -356,7 +355,7 @@ func (self *Scanner) crawl(url string, depth int, referer string, sqliChecks cha
 	}
 
 	if !self.skipCMSCheck {
-		if cms := self.detectCMS(string(body)); cms != "" {
+		if cms := self.detectCMS(string(resp.Body)); cms != "" {
 			logger.Warnf("CMS detected: %s - %s", currentURL, cms)
 			return
 		}
@@ -436,12 +435,12 @@ func (self *Scanner) processForms(resp *Response, baseURL string, sqliChecks cha
 	}
 }
 
-func (self *Scanner) injectSQLiPayload(url string) string {
+func (self *Scanner) injectSQLiPayload(rawURL string) string {
 	payload := url.QueryEscape(sqliPayload)
-	if strings.Count(url, "/") > 3 && strings.HasSuffix(url, "/") {
-		return url[:len(url)-1] + payload + "/"
+	if strings.Count(rawURL, "/") > 3 && strings.HasSuffix(rawURL, "/") {
+		return rawURL[:len(rawURL)-1] + payload + "/"
 	}
-	return url + payload
+	return rawURL + payload
 }
 
 func (self *Scanner) generateCheckKey(check SQLiCheck) (string, error) {
@@ -499,7 +498,7 @@ func (self *Scanner) detectSQLi(check SQLiCheck) (bool, SQLiDetails) {
 			return "", 0, ""
 		}
 		title := utils.ExtractTitle(htmlContent)
-		return errorMessage, status, title
+		return errorMessage, resp.StatusCode, title
 	}
 
 	if len(check.Params) == 0 {
@@ -528,13 +527,14 @@ func (self *Scanner) detectSQLi(check SQLiCheck) (bool, SQLiDetails) {
 }
 
 func (self *Scanner) Scan(urls []string) <-chan ScanResult {
-	logger.Debugf("Scanning %d URLs", len(urls))
+	logger.Infof("Scanning %d URLs", len(urls))
 	sqliChecks := make(chan SQLiCheck)
 	results := make(chan ScanResult)
 	go func() {
 		defer func() {
 			close(sqliChecks)
 			close(results)
+			logger.Infof("Scanning finised!")
 		}()
 		go func() {
 			for check := range sqliChecks {
@@ -558,7 +558,7 @@ func (self *Scanner) setHeaders(req *retryablehttp.Request, referer string) {
 		"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
 		"Accept-Language": "en-US,en;q=0.8",
 		"User-Agent":      self.userAgent,
-		"Referer":          referer,
+		"Referer":         referer,
 	}
 	for key, value := range headers {
 		req.Header.Set(key, value)
