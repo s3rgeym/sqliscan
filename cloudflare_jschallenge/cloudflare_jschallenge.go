@@ -16,8 +16,8 @@ type ChallengeData struct {
 // vm = goja.New()
 //)
 
-// Супер быстрый парсер значений переменных west и east на странице с проверкой
-// от Cloudflare
+// Супер быстрый однопроходной парсер значений переменных west и east на странице с 
+// проверкой от Cloudflare
 func ParseExpression(expression string) (int, error) {
 	index := 0
 
@@ -35,7 +35,7 @@ func ParseExpression(expression string) (int, error) {
 	}
 
 	// выражения в вложенных скобках имеют значения от 0 до 9, они преобразуются
-	// в строки при сложении, а потом преобразуются обратно в число
+	// в строки при сложении между собой, а потом эта строка — в число
 	for accept("(") {
 		result *= 10
 

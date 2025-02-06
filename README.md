@@ -30,3 +30,15 @@ To view all available flags and their descriptions, run:
 ```sh
 sqliscan -h
 ```
+
+### Output Example:
+
+```json
+{"method":"GET","url":"https://site.ru/novostroyki","params":{"flt[all_sq][0]":"","flt[all_sq][1]":"","flt[city]":"2","flt[floor][0]":"","flt[floor][1]":"","flt[floors][0]":"","flt[floors][1]":"","flt[keywords]":"","flt[new_flat]":"1","flt[obj_type]":"flat","flt[price][0]":"","flt[price][1]":"","flt[price_type]":"all","flt[res_cnt]":"1","flt[roomcount][]":"2","flt[sroks][0]":"","flt[sroks][1]":"","show_map":"0","view":"flat"},"error_message":"\u003cb\u003eFatal error\u003c/b\u003e:","title":"","status_code":200,"vuln_param":"flt[keywords]","result_at":"2025-04-03 10:00:00.123456789 +0000 UTC"}
+```
+
+---
+
+## 📥 Download
+
+You can download executables for 🪟 Windows, 🐧 Linux, and 🍎 macOS from [📦 Releases](../../releases).
