@@ -22,12 +22,13 @@ import (
 )
 
 var (
+	defaultReferer = "https://www.google.com/"
 	// null-байт служит индикатором конца строки в C/C++
 	//sqliPayload     = "'\"\x00"
 	sqliPayload = "'\""
 
 	// Тут только ошибки, которые возникают при неожиданной кавычке
-	sqlErrorPattern = regexp.MustCompile(`You have an error in your SQL syntax|Unclosed quote at position|<b>(?:Fatal error|Warning)</b>:|:[^:]*syntax error|Unterminated quoted string at or near|Unclosed quotation mark after the character string|quoted string not properly terminated|Incorrect syntax near|could not execute query|bad SQL grammar`)
+	sqlErrorPattern = regexp.MustCompile(`You have an error in your SQL syntax|syntax error at or near|Unclosed quote at position|Unterminated quoted string at or near|Unclosed quotation mark after the character string|quoted string not properly terminated|Incorrect syntax near|could not execute query|bad SQL grammar|<b>(?:Fatal error|Warning)</b>:`)
 )
 
 type Scanner struct {
@@ -52,16 +53,17 @@ type Scanner struct {
 type Option func(*Scanner)
 
 type SQLiCheck struct {
-	Method string            `json:"method"`
-	URL    string            `json:"url"`
-	Params map[string]string `json:"params"`
+	Method  string            `json:"method"`
+	URL     string            `json:"url"`
+	Params  map[string]string `json:"params,omitempty"`
+	Referer string            `json:"referer,omitempty"`
 }
 
 type SQLiDetails struct {
-	ErrorMessage string `json:"error_message"`
-	PageTitle    string `json:"title"`
+	ErrorMessage string `json:"error_message,omitempty"`
+	PageTitle    string `json:"title,omitempty"`
 	StatusCode   int    `json:"status_code"`
-	VulnParam    string `json:"vuln_param"`
+	VulnParam    string `json:"vuln_param,omitempty"`
 }
 
 type ScanResult struct {
@@ -214,22 +216,26 @@ func (self *Scanner) increaseHostErrors(host string) {
 	self.hostErrors[host]++
 }
 
-func (self *Scanner) makeRequest(method, targetURL string, params map[string]string) ([]byte, int, http.Header, error) {
+type Response struct {
+    URL        *url.URL
+    StatusCode int
+    Body       []byte
+    Header     http.Header
+}
+
+func (self *Scanner) makeRequest(method, targetURL string, params map[string]string, referer string) (*Response, error) {
 	host, err := utils.ExtractHost(targetURL)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, err
 	}
-
 	if self.isHostErrorLimit(host) {
-		return nil, 0, nil, fmt.Errorf("host error limit exceeded")
+		return nil, fmt.Errorf("host error limit exceeded")
 	}
-
 	method = strings.ToUpper(method)
 	req, err := retryablehttp.NewRequest(method, targetURL, nil)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, err
 	}
-
 	if method == http.MethodGet || method == http.MethodHead {
 		q := req.URL.Query()
 		for key, value := range params {
@@ -244,63 +250,52 @@ func (self *Scanner) makeRequest(method, targetURL string, params map[string]str
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Body = io.NopCloser(strings.NewReader(form.Encode()))
 	}
-
 	if err := self.lim.Wait(context.Background()); err != nil {
 		logger.Errorf("Rate limiter error: %v", err)
 		self.increaseHostErrors(host)
-		return nil, 0, nil, err
+		return nil, err
 	}
-
-	self.setHeaders(req)
-
+	self.setHeaders(req, referer)
 	resp, err := self.client.Do(req)
 	if err != nil {
 		self.increaseHostErrors(host)
-		return nil, 0, nil, err
+		return nil, err
 	}
-
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		self.increaseHostErrors(host)
-		return nil, 0, nil, err
+		return nil, err
 	}
-
 	logger.Debugf("%d - %s %s", resp.StatusCode, method, targetURL)
-	return body, resp.StatusCode, resp.Header, nil
+	return &Response{Body: body, StatusCode: resp.StatusCode, URL: resp.Request.URL, Header: resp.Header}, nil
 }
 
-func (self *Scanner) isCloudflareChallenge(body []byte) bool {
-	return bytes.Contains(body, []byte("<title>One moment, please...</title>"))
+func (self *Scanner) isCloudflareChallenge(resp *Response) bool {
+	return bytes.Contains(resp.Body, []byte("<title>One moment, please...</title>"))
 }
 
-func (self *Scanner) sendRequest(method, url string, params map[string]string) ([]byte, int, http.Header, error) {
-	body, status, header, err := self.makeRequest(method, url, params)
-
+func (self *Scanner) sendRequest(method, url string, params map[string]string, referer string) (*Response, error) {
+	resp, err := self.makeRequest(method, url, params, referer)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, err
 	}
-
-	if self.isCloudflareChallenge(body) {
-		logger.Warnf("Cloudflare challenge detected: %s", url)
-
-		challenge, err := cloudflare_jschallenge.ParseChallenge(string(body))
-
+	if self.isCloudflareChallenge(resp) {
+		responseURL := resp.URL.String()
+		logger.Warnf("Cloudflare challenge detected: %s", responseURL)
+		challenge, err := cloudflare_jschallenge.ParseChallenge(string(resp.Body))
 		if err != nil {
-			return nil, 0, nil, err
+		 	return nil, err
 		}
-
-		actionURL, err := utils.URLJoin(url, challenge.Action)
+		actionURL, err := utils.URLJoin(responseURL, challenge.Action)
 		if err != nil {
-			return nil, 0, nil, err
+			return nil, err
 		}
-
 		return self.makeRequest(challenge.Method, actionURL, map[string]string{
 			"wsidchk": fmt.Sprintf("%d", challenge.Wsidchk),
-		})
+		}, referer)
 	}
-
-	return body, status, header, nil
+	return resp, nil
 }
 
 func (self *Scanner) detectCMS(body string) string {
@@ -328,7 +323,7 @@ func (self *Scanner) detectCMS(body string) string {
 	return ""
 }
 
-func (self *Scanner) crawl(url string, depth int, sqliChecks chan<- SQLiCheck) {
+func (self *Scanner) crawl(url string, depth int, referer string, sqliChecks chan<- SQLiCheck) {
 	defer self.wg.Done() // у нас рекурсия!!!
 	if self.isLimitReached(url) {
 		logger.Debugf("Skip %s: limit reached", url)
@@ -336,7 +331,7 @@ func (self *Scanner) crawl(url string, depth int, sqliChecks chan<- SQLiCheck) {
 		return
 	}
 
-	body, status, header, err := self.sendRequest(http.MethodGet, url, nil)
+	resp, err := self.sendRequest(http.MethodGet, url, nil, referer)
 	<-self.sem
 
 	if err != nil {
@@ -345,30 +340,34 @@ func (self *Scanner) crawl(url string, depth int, sqliChecks chan<- SQLiCheck) {
 	}
 
 	self.setVisited(url)
-	if status != http.StatusOK {
-		logger.Debugf("Skip %s with status %d", url, status)
+	currentURL := resp.URL.String()
+	self.setVisited(currentURL)
+	
+	if resp.StatusCode != http.StatusOK {
+		logger.Debugf("Skip %s with status %d", currentURL, resp.StatusCode)
 		return
 	}
 
-	mediaType, _ := utils.GetMediaType(header)
+	
+	mediaType, _ := utils.GetMediaType(resp.Header)
 	if mediaType != "text/html" {
-		logger.Errorf("Non-HTML response: %s", url)
+		logger.Errorf("Non-HTML response: %s", currentURL)
 		return
 	}
 
 	if !self.skipCMSCheck {
 		if cms := self.detectCMS(string(body)); cms != "" {
-			logger.Warnf("CMS detected: %s - %s", url, cms)
+			logger.Warnf("CMS detected: %s - %s", currentURL, cms)
 			return
 		}
 	}
 
-	self.processLinks(body, url, depth, sqliChecks)
-	self.processForms(body, url, sqliChecks)
+	self.processLinks(resp, currentURL, depth, sqliChecks)
+	self.processForms(resp, currentURL, sqliChecks)
 }
 
-func (self *Scanner) processLinks(body []byte, baseURL string, depth int, sqliChecks chan<- SQLiCheck) {
-	links, _ := utils.ExtractLinks(body, baseURL)
+func (self *Scanner) processLinks(resp *Response, baseURL string, depth int, sqliChecks chan<- SQLiCheck) {
+	links, _ := utils.ExtractLinks(resp.Body, baseURL)
 	for _, link := range links {
 		link, err := utils.StripFragment(link)
 		if err != nil || !utils.IsSameHost(link, baseURL) || self.isIgnoredResource(link) || self.isVisited(link) {
@@ -378,7 +377,7 @@ func (self *Scanner) processLinks(body []byte, baseURL string, depth int, sqliCh
 		if depth > 0 {
 			self.wg.Add(1)
 			self.sem <- struct{}{}
-			go self.crawl(link, depth-1, sqliChecks)
+			go self.crawl(link, depth-1, baseURL, sqliChecks)
 		}
 
 		checkURL, checkParams, _ := utils.SplitURLParams(link)
@@ -388,7 +387,7 @@ func (self *Scanner) processLinks(body []byte, baseURL string, depth int, sqliCh
 			checkURL = self.injectSQLiPayload(checkURL)
 		}
 
-		sqliChecks <- SQLiCheck{Method: http.MethodGet, URL: checkURL, Params: checkParams}
+		sqliChecks <- SQLiCheck{Method: http.MethodGet, URL: checkURL, Params: checkParams, Referer: baseURL}
 	}
 }
 
@@ -425,24 +424,24 @@ func (self *Scanner) autoFillFields(fields map[string]string) map[string]string 
 	return filledFields
 }
 
-func (self *Scanner) processForms(body []byte, baseURL string, sqliChecks chan<- SQLiCheck) {
-	forms, _ := utils.ExtractForms(body, baseURL)
+func (self *Scanner) processForms(resp *Response, baseURL string, sqliChecks chan<- SQLiCheck) {
+	forms, _ := utils.ExtractForms(resp.Body, baseURL)
 	for _, form := range forms {
 		// Пропускаем формы, ведущие на сторонние домены
 		if !utils.IsSameHost(form.Action, baseURL) {
 			continue
 		}
 		logger.Debugf("Form found: Method=%s, Action=%s, Fields=%v", form.Method, form.Action, form.Fields)
-		sqliChecks <- SQLiCheck{Method: form.Method, URL: form.Action, Params: self.autoFillFields(form.Fields)}
+		sqliChecks <- SQLiCheck{Method: form.Method, URL: form.Action, Params: self.autoFillFields(form.Fields), Referer: baseURL}
 	}
 }
 
-func (self *Scanner) injectSQLiPayload(target string) string {
+func (self *Scanner) injectSQLiPayload(url string) string {
 	payload := url.QueryEscape(sqliPayload)
-	if strings.Count(target, "/") > 3 && strings.HasSuffix(target, "/") {
-		return target[:len(target)-1] + payload + "/"
+	if strings.Count(url, "/") > 3 && strings.HasSuffix(url, "/") {
+		return url[:len(url)-1] + payload + "/"
 	}
-	return target + payload
+	return url + payload
 }
 
 func (self *Scanner) generateCheckKey(check SQLiCheck) (string, error) {
@@ -493,8 +492,8 @@ func (self *Scanner) checkSQLi(check SQLiCheck, results chan<- ScanResult) {
 
 func (self *Scanner) detectSQLi(check SQLiCheck) (bool, SQLiDetails) {
 	handle := func(params map[string]string) (string, int, string) {
-		body, status, _, _ := self.sendRequest(check.Method, check.URL, params)
-		htmlContent := string(body)
+		resp, _ := self.sendRequest(check.Method, check.URL, params, check.Referer)
+		htmlContent := string(resp.Body)
 		errorMessage := sqlErrorPattern.FindString(htmlContent)
 		if errorMessage == "" {
 			return "", 0, ""
@@ -547,18 +546,19 @@ func (self *Scanner) Scan(urls []string) <-chan ScanResult {
 		for _, url := range urls {
 			self.wg.Add(1)
 			self.sem <- struct{}{}
-			go self.crawl(url, self.crawlDepth, sqliChecks)
+			go self.crawl(url, self.crawlDepth, defaultReferer, sqliChecks)
 		}
 		self.wg.Wait()
 	}()
 	return results
 }
 
-func (self *Scanner) setHeaders(req *retryablehttp.Request) {
+func (self *Scanner) setHeaders(req *retryablehttp.Request, referer string) {
 	headers := map[string]string{
 		"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
 		"Accept-Language": "en-US,en;q=0.8",
 		"User-Agent":      self.userAgent,
+		"Referer":          referer,
 	}
 	for key, value := range headers {
 		req.Header.Set(key, value)
