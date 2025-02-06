@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	html2 "golang.org/x/net/html"
 	"html"
 	"io"
 	"mime"
@@ -11,8 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-
-	html2 "golang.org/x/net/html"
+	"sync"
 )
 
 // type Semaphore struct {
@@ -252,6 +252,18 @@ func SplitURLParams(inputURL string) (string, map[string]string, error) {
 	return parsedURL.String(), params, nil
 }
 
+func BuildQueryString(params map[string]string) string {
+	var parts []string
+
+	for key, value := range params {
+		escapedKey := url.QueryEscape(key)
+		escapedValue := url.QueryEscape(value)
+		parts = append(parts, escapedKey+"="+escapedValue)
+	}
+
+	return strings.Join(parts, "&")
+}
+
 // func CopyMap(m map[string]interface{}) map[string]interface{} {
 // 	cp := make(map[string]interface{})
 // 	for k, v := range m {
@@ -272,4 +284,13 @@ func CopyStringMap(m map[string]string) map[string]string {
 		cp[k] = v
 	}
 	return cp
+}
+
+func SyncMapSize(m *sync.Map) int {
+	size := 0
+	m.Range(func(key, value interface{}) bool {
+		size++
+		return true
+	})
+	return size
 }

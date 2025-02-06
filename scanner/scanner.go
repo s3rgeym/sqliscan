@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,10 +26,10 @@ const (
 	defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 	// Некоторые WAF блокируют идущие подряд запросы без Referer, поэтому мы передаем его всегда
 	defaultReferer = "https://www.google.com/"
-	quotes = "'\""
-	nullByte = "\x00"
+	quotes         = "'\""
+	nullByte       = "\x00"
 )
-	
+
 var (
 	// Тут только ошибки, которые возникают при неожиданной кавычке в SQL
 	sqlErrorPattern = regexp.MustCompile(`You have an error in your SQL syntax|syntax error at or near|Unclosed quote at position|Unterminated quoted string at or near|Unclosed quotation mark after the character string|quoted string not properly terminated|Incorrect syntax near|could not execute query|bad SQL grammar|<b>(?:Fatal error|Warning)</b>:`)
@@ -225,7 +226,7 @@ func (self *Scanner) increaseHostErrors(host string) {
 }
 
 func (self *Scanner) hasBody(method string) bool {
-	return  method != http.MethodGet && method != http.MethodHead
+	return method != http.MethodGet && method != http.MethodHead
 }
 
 func (self *Scanner) makeRequest(method, targetURL string, params map[string]string, referer string) (*ResponseWrapper, error) {
@@ -441,7 +442,8 @@ func (self *Scanner) processForms(resp *ResponseWrapper, baseURL string, sqliChe
 		if !utils.IsSameHost(form.Action, baseURL) {
 			continue
 		}
-		logger.Debugf("Form found: Method=%s, Action=%s, Fields=%v", form.Method, form.Action, form.Fields)
+		fieldsJson, _ := json.Marshal(form.Fields)
+		logger.Debugf("Form found: Method=%s, Action=%s, Fields=%s", form.Method, form.Action, string(fieldsJson))
 		sqliChecks <- SQLiCheck{Method: form.Method, URL: form.Action, Params: self.autoFillFields(form.Fields), Referer: baseURL}
 	}
 }
@@ -501,7 +503,7 @@ func (self *Scanner) checkSQLi(check SQLiCheck, results chan<- ScanResult) {
 
 	results <- ScanResult{
 		SQLiCheck:   check,
-		SQLiDetails: details,
+		SQLiDetails: *details,
 		ResultAt:    time.Now().Local().String(),
 	}
 }
@@ -555,11 +557,13 @@ func (self *Scanner) Scan(urls []string) <-chan ScanResult {
 	logger.Debugf("🔍 Scanning %d URLs", len(urls))
 	sqliChecks := make(chan SQLiCheck)
 	results := make(chan ScanResult)
-    	go func() {
+	go func() {
 		defer func() {
 			close(sqliChecks)
 			close(results)
 			logger.Infof("🎉 Scanning finished!")
+			logger.Debugf("Total visited links: %d", utils.SyncMapSize(&self.visited))
+			logger.Debugf("Total checks: %d", utils.SyncMapSize(&self.checked))
 		}()
 		go func() {
 			for check := range sqliChecks {
@@ -612,18 +616,18 @@ func (self *Scanner) isVisited(url string) bool {
 }
 
 var ignoredExtensions = []string{
-    ".aac", ".apk", ".avi", ".bak", ".bin",
-    ".bmp", ".csv", ".dmg", ".doc", ".docx",
-    ".eot", ".epub", ".exe", ".flac", ".flv",
-    ".gif", ".gz", ".ico", ".iso", ".jar",
-    ".jpeg", ".jpg", ".json", ".log", ".m4a",
-    ".mobi", ".mkv", ".mov", ".mp3", ".mp4",
-    ".odt", ".ogg", ".ods", ".pdf", ".png",
-    ".ppt", ".pptx", ".psd", ".rar", ".svg",
-    ".swf", ".tar", ".tiff", ".txt", ".wav",
-    ".webp", ".woff", ".woff2", ".xls", ".xlsx",
-    ".xml", ".zip", ".7z", ".aac", ".ttf",
-    ".otf",
+	".aac", ".apk", ".avi", ".bak", ".bin",
+	".bmp", ".csv", ".dmg", ".doc", ".docx",
+	".eot", ".epub", ".exe", ".flac", ".flv",
+	".gif", ".gz", ".ico", ".iso", ".jar",
+	".jpeg", ".jpg", ".json", ".log", ".m4a",
+	".mobi", ".mkv", ".mov", ".mp3", ".mp4",
+	".odt", ".ogg", ".ods", ".pdf", ".png",
+	".ppt", ".pptx", ".psd", ".rar", ".svg",
+	".swf", ".tar", ".tiff", ".txt", ".wav",
+	".webp", ".woff", ".woff2", ".xls", ".xlsx",
+	".xml", ".zip", ".7z", ".aac", ".ttf",
+	".otf",
 }
 
 func (self *Scanner) isIgnoredResource(inputURL string) bool {
