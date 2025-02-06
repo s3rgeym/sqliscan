@@ -7,6 +7,7 @@ import (
 	html2 "golang.org/x/net/html"
 	"html"
 	"io"
+	"math/rand"
 	"mime"
 	"net/http"
 	"net/url"
@@ -293,4 +294,30 @@ func SyncMapSize(m *sync.Map) int {
 		return true
 	})
 	return size
+}
+
+func GenerateRandomUserAgent() string {
+	// Возможные платформы
+	platforms := []string{
+		"(Windows NT 10.0; Win64; x64)",
+		"(Macintosh; Intel Mac OS X 10_15_7)",
+		"(X11; Linux x86_64)",
+		"(Windows NT 6.1; Win64; x64)",
+		"(Macintosh; Intel Mac OS X 10_14_6)",
+	}
+
+	// Случайный выбор платформы
+	platform := platforms[rand.Intn(len(platforms))]
+
+	// Генерация случайной мажорной версии Chrome (от 88 до 131)
+	majorVersion := rand.Intn(131-88+1) + 88
+
+	// Формирование User-Agent
+	userAgent := fmt.Sprintf(
+		"Mozilla/5.0 %s AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%d.0.0.0 Safari/537.36",
+		platform,
+		majorVersion,
+	)
+
+	return userAgent
 }

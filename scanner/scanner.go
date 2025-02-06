@@ -11,29 +11,27 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"regexp"
-	"sqliscan/cloudflare_jschallenge"
-	"sqliscan/logger"
-	"sqliscan/utils"
 	"strings"
 	"sync"
 	"time"
+
+	"sqliscan/cloudflare_jschallenge"
+	"sqliscan/logger"
+	"sqliscan/utils"
 
 	"github.com/hashicorp/go-retryablehttp"
 	"golang.org/x/time/rate"
 )
 
 const (
-	defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 	// Некоторые WAF блокируют идущие подряд запросы без Referer, поэтому мы передаем его всегда
 	defaultReferer = "https://www.google.com/"
 	quotes         = "'\""
 	nullByte       = "\x00"
 )
 
-var (
-	// Тут только ошибки, которые возникают при неожиданной кавычке в SQL
-	sqlErrorPattern = regexp.MustCompile(`You have an error in your SQL syntax|syntax error at or near|Unclosed quote at position|Unterminated quoted string at or near|Unclosed quotation mark after the character string|quoted string not properly terminated|Incorrect syntax near|could not execute query|bad SQL grammar|<b>(?:Fatal error|Warning)</b>:`)
-)
+// Тут только ошибки, которые возникают при неожиданной кавычке в SQL
+var sqlErrorPattern = regexp.MustCompile(`You have an error in your SQL syntax|syntax error at or near|Unclosed quote at position|Unterminated quoted string at or near|Unclosed quotation mark after the character string|quoted string not properly terminated|Incorrect syntax near|could not execute query|bad SQL grammar|<b>(?:Fatal error|Warning)</b>:`)
 
 type Scanner struct {
 	checked          sync.Map
@@ -62,10 +60,11 @@ type ResponseWrapper struct {
 }
 
 type SQLiCheck struct {
-	Method  string            `json:"method"`
-	URL     string            `json:"url"`
-	Params  map[string]string `json:"params,omitempty"`
-	Referer string            `json:"referer,omitempty"`
+	Method    string            `json:"method"`
+	URL       string            `json:"url"`
+	Params    map[string]string `json:"params,omitempty"`
+	Referer   string            `json:"referer,omitempty"`
+	UserAgent string            `json:"user_agent,omitempty"`
 }
 
 type SQLiDetails struct {
@@ -118,7 +117,6 @@ func NewScanner(opts ...Option) *Scanner {
 		maxHostErrors:    30,
 		maxInternalLinks: 150,
 		skipCMSCheck:     false,
-		userAgent:        defaultUserAgent,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -229,7 +227,7 @@ func (self *Scanner) hasBody(method string) bool {
 	return method != http.MethodGet && method != http.MethodHead
 }
 
-func (self *Scanner) makeRequest(method, targetURL string, params map[string]string, referer string) (*ResponseWrapper, error) {
+func (self *Scanner) makeRequest(method, targetURL string, params map[string]string, referer, userAgent string) (*ResponseWrapper, error) {
 	host, err := utils.ExtractHost(targetURL)
 	if err != nil {
 		return nil, err
@@ -261,7 +259,7 @@ func (self *Scanner) makeRequest(method, targetURL string, params map[string]str
 		self.increaseHostErrors(host)
 		return nil, err
 	}
-	self.setHeaders(req, referer)
+	self.setHeaders(req, referer, userAgent)
 	resp, err := self.client.Do(req)
 	if err != nil {
 		self.increaseHostErrors(host)
@@ -273,7 +271,7 @@ func (self *Scanner) makeRequest(method, targetURL string, params map[string]str
 		self.increaseHostErrors(host)
 		return nil, err
 	}
-	logger.Debugf("%d - %s %s - %s", resp.StatusCode, method, targetURL, referer)
+	logger.Debugf("[%d] %s %s | Referer: %s | User-Agent: %s", resp.StatusCode, method, targetURL, referer, userAgent)
 	return &ResponseWrapper{Body: body, Response: *resp}, nil
 }
 
@@ -281,8 +279,8 @@ func (self *Scanner) isCloudflareChallenge(resp *ResponseWrapper) bool {
 	return bytes.Contains(resp.Body, []byte("<title>One moment, please...</title>"))
 }
 
-func (self *Scanner) sendRequest(method, url string, params map[string]string, referer string) (*ResponseWrapper, error) {
-	resp, err := self.makeRequest(method, url, params, referer)
+func (self *Scanner) sendRequest(method, url string, params map[string]string, referer, userAgent string) (*ResponseWrapper, error) {
+	resp, err := self.makeRequest(method, url, params, referer, userAgent)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +297,7 @@ func (self *Scanner) sendRequest(method, url string, params map[string]string, r
 		}
 		return self.makeRequest(challenge.Method, actionURL, map[string]string{
 			"wsidchk": fmt.Sprintf("%d", challenge.Wsidchk),
-		}, referer)
+		}, referer, userAgent)
 	}
 	return resp, nil
 }
@@ -335,7 +333,7 @@ func (self *Scanner) detectCMS(body string) string {
 	return ""
 }
 
-func (self *Scanner) crawl(url string, depth int, referer string, sqliChecks chan<- SQLiCheck) {
+func (self *Scanner) crawl(url string, depth int, referer, userAgent string, sqliChecks chan<- SQLiCheck) {
 	defer self.wg.Done() // у нас рекурсия!!!
 	if self.isLimitReached(url) {
 		logger.Debugf("Skip %s: limit reached", url)
@@ -343,7 +341,12 @@ func (self *Scanner) crawl(url string, depth int, referer string, sqliChecks cha
 		return
 	}
 
-	resp, err := self.sendRequest(http.MethodGet, url, nil, referer)
+	if userAgent == "" {
+		userAgent = utils.GenerateRandomUserAgent()
+		// logger.Debugf("User-Agent %q for %s", userAgent, url)
+	}
+
+	resp, err := self.sendRequest(http.MethodGet, url, nil, referer, userAgent)
 	<-self.sem
 
 	if err != nil {
@@ -373,12 +376,12 @@ func (self *Scanner) crawl(url string, depth int, referer string, sqliChecks cha
 		}
 	}
 
-	self.processLinks(resp, currentURL, depth, sqliChecks)
-	self.processForms(resp, currentURL, sqliChecks)
+	self.processLinks(resp.Body, currentURL, depth, userAgent, sqliChecks)
+	self.processForms(resp.Body, currentURL, userAgent, sqliChecks)
 }
 
-func (self *Scanner) processLinks(resp *ResponseWrapper, baseURL string, depth int, sqliChecks chan<- SQLiCheck) {
-	links, _ := utils.ExtractLinks(resp.Body, baseURL)
+func (self *Scanner) processLinks(body []byte, baseURL string, depth int, userAgent string, sqliChecks chan<- SQLiCheck) {
+	links, _ := utils.ExtractLinks(body, baseURL)
 	for _, link := range links {
 		link, err := utils.StripFragment(link)
 		if err != nil || !utils.IsSameHost(link, baseURL) || self.isIgnoredResource(link) || self.isVisited(link) {
@@ -388,17 +391,17 @@ func (self *Scanner) processLinks(resp *ResponseWrapper, baseURL string, depth i
 		if depth > 0 {
 			self.wg.Add(1)
 			self.sem <- struct{}{}
-			go self.crawl(link, depth-1, baseURL, sqliChecks)
+			go self.crawl(link, depth-1, baseURL, userAgent, sqliChecks)
 		}
 
 		checkURL, checkParams, _ := utils.SplitURLParams(link)
-		//logger.Debugf("Split URL params: %s, %v", checkURL, checkParams)
+		// logger.Debugf("Split URL params: %s, %v", checkURL, checkParams)
 
 		if len(checkParams) == 0 {
 			checkURL = self.injectSQLiPayload(checkURL)
 		}
 
-		sqliChecks <- SQLiCheck{Method: http.MethodGet, URL: checkURL, Params: checkParams, Referer: baseURL}
+		sqliChecks <- SQLiCheck{Method: http.MethodGet, URL: checkURL, Params: checkParams, UserAgent: userAgent, Referer: baseURL}
 	}
 }
 
@@ -435,8 +438,8 @@ func (self *Scanner) autoFillFields(fields map[string]string) map[string]string 
 	return filledFields
 }
 
-func (self *Scanner) processForms(resp *ResponseWrapper, baseURL string, sqliChecks chan<- SQLiCheck) {
-	forms, _ := utils.ExtractForms(resp.Body, baseURL)
+func (self *Scanner) processForms(body []byte, baseURL, userAgent string, sqliChecks chan<- SQLiCheck) {
+	forms, _ := utils.ExtractForms(body, baseURL)
 	for _, form := range forms {
 		// Пропускаем формы, ведущие на сторонние домены
 		if !utils.IsSameHost(form.Action, baseURL) {
@@ -444,7 +447,7 @@ func (self *Scanner) processForms(resp *ResponseWrapper, baseURL string, sqliChe
 		}
 		fieldsJson, _ := json.Marshal(form.Fields)
 		logger.Debugf("Form found: Method=%s, Action=%s, Fields=%s", form.Method, form.Action, string(fieldsJson))
-		sqliChecks <- SQLiCheck{Method: form.Method, URL: form.Action, Params: self.autoFillFields(form.Fields), Referer: baseURL}
+		sqliChecks <- SQLiCheck{Method: form.Method, URL: form.Action, Params: self.autoFillFields(form.Fields), UserAgent: userAgent, Referer: baseURL}
 	}
 }
 
@@ -510,7 +513,7 @@ func (self *Scanner) checkSQLi(check SQLiCheck, results chan<- ScanResult) {
 
 func (self *Scanner) detectSQLi(check SQLiCheck) (bool, *SQLiDetails) {
 	handle := func(params map[string]string) (string, int, string) {
-		resp, _ := self.sendRequest(check.Method, check.URL, params, check.Referer)
+		resp, _ := self.sendRequest(check.Method, check.URL, params, check.Referer, check.UserAgent)
 		htmlContent := string(resp.Body)
 		errorMessage := sqlErrorPattern.FindString(htmlContent)
 		if errorMessage == "" {
@@ -534,9 +537,9 @@ func (self *Scanner) detectSQLi(check SQLiCheck) (bool, *SQLiDetails) {
 			// Тут так же кодируем null-byte, чтобы в итоге он превратился в %2500
 			payload += url.QueryEscape(nullByte)
 		}
-		count := 0
+		count := self.maxCheckParams
 		for param := range check.Params {
-			if count >= self.maxCheckParams {
+			if count == 0 {
 				break
 			}
 			params := utils.CopyStringMap(check.Params)
@@ -546,7 +549,7 @@ func (self *Scanner) detectSQLi(check SQLiCheck) (bool, *SQLiDetails) {
 			if errorMessage != "" {
 				return true, &SQLiDetails{ErrorMessage: errorMessage, VulnParam: param, PageTitle: title, StatusCode: status}
 			}
-			count++
+			count--
 		}
 	}
 	return false, nil
@@ -575,18 +578,18 @@ func (self *Scanner) Scan(urls []string) <-chan ScanResult {
 		for _, url := range urls {
 			self.wg.Add(1)
 			self.sem <- struct{}{}
-			go self.crawl(url, self.crawlDepth, defaultReferer, sqliChecks)
+			go self.crawl(url, self.crawlDepth, defaultReferer, self.userAgent, sqliChecks)
 		}
 		self.wg.Wait()
 	}()
 	return results
 }
 
-func (self *Scanner) setHeaders(req *retryablehttp.Request, referer string) {
+func (self *Scanner) setHeaders(req *retryablehttp.Request, referer, userAgent string) {
 	headers := map[string]string{
 		"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
 		"Accept-Language": "en-US,en;q=0.8",
-		"User-Agent":      self.userAgent,
+		"User-Agent":      userAgent,
 		"Referer":         referer,
 	}
 	for key, value := range headers {
@@ -601,7 +604,7 @@ func (self *Scanner) isLimitReached(url string) bool {
 	if err != nil {
 		return false
 	}
-	//logger.Debugf("Requests for %s %s: %d", url, host, self.hostVisits[host])
+	// logger.Debugf("Requests for %s %s: %d", url, host, self.hostVisits[host])
 	self.hostVisits[host]++
 	return self.hostVisits[host] > self.maxInternalLinks
 }
