@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -320,4 +321,13 @@ func GenerateRandomUserAgent() string {
 	)
 
 	return userAgent
+}
+
+func SortKeys(params map[string]string) []string {
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

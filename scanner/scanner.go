@@ -36,7 +36,7 @@ var (
 	// разделенные с помощью "-" или "+", или закодированные через % либо числа,
 	// а затем идут необязательные финальный слеш или расширение типа ".html" при
 	// использовании Mod Rewrite
-	variableSegmentRegex = regexp.MustCompile(`/(?i)(?P<segment>\d+|[^/+-]+[+-][^/]+|[^/]*(?:%[\da-f]{2})+[^/]*)(?P<end>\.[a-z]{2,5}|/)?$`)
+	pathParamRegex = regexp.MustCompile(`/(?i)(?P<param>\d+|[^/+-]+[+-][^/]+|[^/]*(?:%[\da-f]{2})+[^/]*)(?P<end>\.[a-z]{2,5}|/)?$`)
 	// Тут только ошибки, которые возникают при неожиданной кавычке в SQL
 	sqlErrorPattern = regexp.MustCompile(`You have an error in your SQL syntax|syntax error at or near|Unclosed quote at position|Unterminated quoted string at or near|Unclosed quotation mark after the character string|quoted string not properly terminated|Incorrect syntax near|could not execute query|bad SQL grammar|<b>(?:Fatal error|Warning)</b>:`)
 )
@@ -410,8 +410,8 @@ func (self *Scanner) processLinks(body []byte, baseURL string, depth int, userAg
 		// logger.Debugf("Split URL params: %s, %v", checkURL, checkParams)
 
 		if len(checkParams) == 0 {
-			if !variableSegmentRegex.MatchString(checkURL) {
-				logger.Debugf("🚫 URL does not contain a variable segment: %s", checkURL)
+			if !pathParamRegex.MatchString(checkURL) {
+				logger.Debugf("🚫 URL does not contain a path parameter: %s", checkURL)
 				continue
 			}
 
@@ -480,7 +480,7 @@ func (self *Scanner) injectSQLiPayload(rawURL string) string {
 	// если %00 встречается в самом URL. Поэтому его нужно кодировать 2 раза, то
 	// есть использовать %2500.
 	payload := url.QueryEscape(quotes + url.QueryEscape(nullByte))
-	return variableSegmentRegex.ReplaceAllString(rawURL, "/${segment}"+payload+"${end}")
+	return pathParamRegex.ReplaceAllString(rawURL, "/${param}"+payload+"${end}")
 }
 
 func (self *Scanner) generateSQLiCheckKey(check SQLiCheck) (string, error) {
@@ -491,16 +491,15 @@ func (self *Scanner) generateSQLiCheckKey(check SQLiCheck) (string, error) {
 			return "", err
 		}
 
+		sortedKeys := utils.SortKeys(check.Params)
 		query := u.Query()
-		for key := range check.Params {
-			query.Add(key, "") // Добавляем ключ без значения
+		for i, key := range sortedKeys {
+			query.Add(key, fmt.Sprintf("param%d", i+1))
 		}
 		u.RawQuery = query.Encode()
-
-		u.RawQuery = strings.ReplaceAll(u.RawQuery, "=", "")
 		checkURL = u.String()
 	} else {
-		checkURL = variableSegmentRegex.ReplaceAllString(checkURL, "/:variable${end}")
+		checkURL = pathParamRegex.ReplaceAllString(checkURL, "/:param${end}")
 	}
 	return fmt.Sprintf("%s %s", check.Method, checkURL), nil
 }
