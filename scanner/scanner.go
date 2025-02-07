@@ -495,7 +495,7 @@ func (self *Scanner) generateSQLiCheckKey(check SQLiCheck) (string, error) {
 		u.RawQuery = strings.ReplaceAll(u.RawQuery, "=", "")
 		checkURL = u.String()
 	} else {
-		checkURL = dynamicSegmentRegex.ReplaceAllString(checkURL, "/@${end}")
+		checkURL = dynamicSegmentRegex.ReplaceAllString(checkURL, "/<!>${end}")
 	}
 	return fmt.Sprintf("%s %s", check.Method, checkURL), nil
 }
