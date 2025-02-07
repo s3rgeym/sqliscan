@@ -30,8 +30,15 @@ const (
 	nullByte       = "\x00"
 )
 
-// Тут только ошибки, которые возникают при неожиданной кавычке в SQL
-var sqlErrorPattern = regexp.MustCompile(`You have an error in your SQL syntax|syntax error at or near|Unclosed quote at position|Unterminated quoted string at or near|Unclosed quotation mark after the character string|quoted string not properly terminated|Incorrect syntax near|could not execute query|bad SQL grammar|<b>(?:Fatal error|Warning)</b>:`)
+var (
+	// Тут только ошибки, которые возникают при неожиданной кавычке в SQL
+	sqlErrorPattern = regexp.MustCompile(`You have an error in your SQL syntax|syntax error at or near|Unclosed quote at position|Unterminated quoted string at or near|Unclosed quotation mark after the character string|quoted string not properly terminated|Incorrect syntax near|could not execute query|bad SQL grammar|<b>(?:Fatal error|Warning)</b>:`)
+	// Динамические URL как правило содержат в последнем сегменте слова,
+	// разделенные с помощью "-", или закодированные через % либо числа, а затем
+	// идут необязательные финальный слеш или расширение типа ".html" при
+	// использовании Mod Rewrite
+	dynamicSegmentRegex = regexp.MustCompile(`/(?i)(?P<segment>\d+|[^/-]+-[^/]+|[^/]*(?:%[\da-f]{2})+[^/]*)(?P<end>\.html?|/)?$`)
+)
 
 type Scanner struct {
 	checked          sync.Map
@@ -90,7 +97,7 @@ func NewScanner(opts ...Option) *Scanner {
 	client.HTTPClient.Transport = transport
 	client.HTTPClient.Jar = jar
 
-	// Отключаем redirect
+	// Разрешаем перенаправление тольно на тот же хост, например, с http на https
 	client.HTTPClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		// Этот фрагмент вроде не нужен, но на всякий случай
 		if len(via) == 0 {
@@ -335,8 +342,8 @@ func (self *Scanner) detectCMS(body string) string {
 
 func (self *Scanner) crawl(url string, depth int, referer, userAgent string, sqliChecks chan<- SQLiCheck) {
 	defer self.wg.Done() // у нас рекурсия!!!
-	if self.isLimitReached(url) {
-		logger.Debugf("Skip %s: limit reached", url)
+	if self.isVisitLimitReached(url) {
+		logger.Debugf("Skip %s: visit limit reached", url)
 		<-self.sem
 		return
 	}
@@ -398,6 +405,11 @@ func (self *Scanner) processLinks(body []byte, baseURL string, depth int, userAg
 		// logger.Debugf("Split URL params: %s, %v", checkURL, checkParams)
 
 		if len(checkParams) == 0 {
+			if !dynamicSegmentRegex.MatchString(checkURL) {
+				logger.Debugf("URL %s is not dynamic", checkURL)
+				continue
+			}
+
 			checkURL = self.injectSQLiPayload(checkURL)
 		}
 
@@ -451,35 +463,37 @@ func (self *Scanner) processForms(body []byte, baseURL, userAgent string, sqliCh
 	}
 }
 
-// Добавляет кавычки в конец URL либо перед финальным "/"
 func (self *Scanner) injectSQLiPayload(rawURL string) string {
-	// null-bytes в C/C++ используется для обозначения конца строки (которая не более
-	// чем массив байт). Подставив %00 в какой-то параметр, мы можем "обрезать" строку
-	// и выполнить произвольный SQL-запрос. Но есть одно НО: сайты, как правило,
-	// работают за Nginx, который отдает 404, если %00 встречается в самом URL.
-	// Поэтому его нужно кодировать 2 раза, то есть использовать %2500.
+	// null-байт в C/C++ используется для обозначения конца строки (которая не
+	// более чем массив байт). Подставив %00 в какой-то параметр, мы можем
+	// "обрезать" строку и выполнить произвольный SQL-запрос. Но есть одно НО:
+	// сайты, как правило, работают за Nginx, который отдает 400 (Bad Request),
+	// если %00 встречается в самом URL. Поэтому его нужно кодировать 2 раза, то
+	// есть использовать %2500.
 	payload := url.QueryEscape(quotes + url.QueryEscape(nullByte))
-	if strings.Count(rawURL, "/") > 3 && strings.HasSuffix(rawURL, "/") {
-		return rawURL[:len(rawURL)-1] + payload + "/"
-	}
-	return rawURL + payload
+	return dynamicSegmentRegex.ReplaceAllString(rawURL, "/${segment}"+payload+"${end}")
 }
 
-func (self *Scanner) generateCheckKey(check SQLiCheck) (string, error) {
-	u, err := url.Parse(check.URL)
-	if err != nil {
-		return "", err
-	}
+func (self *Scanner) generateSQLiCheckKey(check SQLiCheck) (string, error) {
+	checkURL := check.URL
+	if len(check.Params) > 0 {
+		u, err := url.Parse(check.URL)
+		if err != nil {
+			return "", err
+		}
 
-	query := u.Query()
-	for key := range check.Params {
-		query.Add(key, "") // Добавляем ключ без значения
-	}
-	u.RawQuery = query.Encode()
+		query := u.Query()
+		for key := range check.Params {
+			query.Add(key, "") // Добавляем ключ без значения
+		}
+		u.RawQuery = query.Encode()
 
-	// Формируем итоговый URL
-	u.RawQuery = strings.ReplaceAll(u.RawQuery, "=", "")
-	return fmt.Sprintf("%s %s", check.Method, u.String()), nil
+		u.RawQuery = strings.ReplaceAll(u.RawQuery, "=", "")
+		checkURL = u.String()
+	} else {
+		checkURL = dynamicSegmentRegex.ReplaceAllString(checkURL, "/@${end}")
+	}
+	return fmt.Sprintf("%s %s", check.Method, checkURL), nil
 }
 
 func (self *Scanner) checkSQLi(check SQLiCheck, results chan<- ScanResult) {
@@ -488,7 +502,7 @@ func (self *Scanner) checkSQLi(check SQLiCheck, results chan<- ScanResult) {
 		self.wg.Done()
 	}()
 
-	checkKey, err := self.generateCheckKey(check)
+	checkKey, err := self.generateSQLiCheckKey(check)
 	if err != nil {
 		logger.Errorf("Generate check key error: %v", err)
 		return
@@ -566,7 +580,7 @@ func (self *Scanner) Scan(urls []string) <-chan ScanResult {
 			close(results)
 			logger.Infof("🎉 Scanning finished!")
 			logger.Debugf("Total visited links: %d", utils.SyncMapSize(&self.visited))
-			logger.Debugf("Total checks: %d", utils.SyncMapSize(&self.checked))
+			logger.Debugf("Total checked resources: %d", utils.SyncMapSize(&self.checked))
 		}()
 		go func() {
 			for check := range sqliChecks {
@@ -597,7 +611,7 @@ func (self *Scanner) setHeaders(req *retryablehttp.Request, referer, userAgent s
 	}
 }
 
-func (self *Scanner) isLimitReached(url string) bool {
+func (self *Scanner) isVisitLimitReached(url string) bool {
 	self.mu.Lock()
 	defer self.mu.Unlock()
 	host, err := utils.ExtractHost(url)
