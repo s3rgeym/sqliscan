@@ -459,6 +459,10 @@ func (self *Scanner) processForms(body []byte, baseURL, userAgent string, sqliCh
 		}
 		fieldsJson, _ := json.Marshal(form.Fields)
 		logger.Debugf("Form found: Method=%s, Action=%s, Fields=%s", form.Method, form.Action, string(fieldsJson))
+		if len(form.Fields) == 0 {
+			logger.Debugf("Form has no fields: Method=%s, Action=%s", form.Method, form.Action)
+			continue
+		}
 		sqliChecks <- SQLiCheck{Method: form.Method, URL: form.Action, Params: self.autoFillFields(form.Fields), UserAgent: userAgent, Referer: baseURL}
 	}
 }
