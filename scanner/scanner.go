@@ -37,7 +37,7 @@ var (
 	// разделенные с помощью "-", или закодированные через % либо числа, а затем
 	// идут необязательные финальный слеш или расширение типа ".html" при
 	// использовании Mod Rewrite
-	dynamicSegmentRegex = regexp.MustCompile(`/(?i)(?P<segment>\d+|[^/-]+-[^/]+|[^/]*(?:%[\da-f]{2})+[^/]*)(?P<end>\.html?|/)?$`)
+	dynamicSegmentRegex = regexp.MustCompile(`/(?i)(?P<segment>\d+|[^/-]+-[^/]+|[^/]*(?:%[\da-f]{2})+[^/]*)(?P<end>\.[a-z]{2,5}|/)?$`)
 )
 
 type Scanner struct {
