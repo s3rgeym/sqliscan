@@ -31,12 +31,12 @@ const (
 )
 
 var (
-	httpRe = regexp.MustCompile("^(?i)https?://")
+	httpSchemeRegex = regexp.MustCompile("^(?i)https?://")
 	// Динамические URL как правило содержат в последнем сегменте слова,
 	// разделенные с помощью "-" или "+", или закодированные через % либо числа,
 	// а затем идут необязательные финальный слеш или расширение типа ".html" при
 	// использовании Mod Rewrite
-	dynamicSegmentRegex = regexp.MustCompile(`/(?i)(?P<segment>\d+|[^/+-]+[+-][^/]+|[^/]*(?:%[\da-f]{2})+[^/]*)(?P<end>\.[a-z]{2,5}|/)?$`)
+	variableSegmentRegex = regexp.MustCompile(`/(?i)(?P<segment>\d+|[^/+-]+[+-][^/]+|[^/]*(?:%[\da-f]{2})+[^/]*)(?P<end>\.[a-z]{2,5}|/)?$`)
 	// Тут только ошибки, которые возникают при неожиданной кавычке в SQL
 	sqlErrorPattern = regexp.MustCompile(`You have an error in your SQL syntax|syntax error at or near|Unclosed quote at position|Unterminated quoted string at or near|Unclosed quotation mark after the character string|quoted string not properly terminated|Incorrect syntax near|could not execute query|bad SQL grammar|<b>(?:Fatal error|Warning)</b>:`)
 )
@@ -274,7 +274,8 @@ func (self *Scanner) makeRequest(method, targetURL string, params map[string]str
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// logger.Debugf(string(body))
 	if err != nil {
 		self.increaseHostErrors(host)
 		return nil, err
@@ -293,9 +294,12 @@ func (self *Scanner) sendRequest(method, url string, params map[string]string, r
 		return nil, err
 	}
 	if self.isCloudflareChallenge(resp) {
+		body := string(resp.Body)
+		// Потом через логи посмотрю и попытаюсь другие капчи решить
+		logger.Debugf(body)
 		responseURL := resp.Request.URL.String()
 		logger.Warnf("Cloudflare challenge detected: %s", responseURL)
-		challenge, err := cloudflare_jschallenge.ParseChallenge(string(resp.Body))
+		challenge, err := cloudflare_jschallenge.ParseChallenge(body)
 		if err != nil {
 			return nil, err
 		}
@@ -344,7 +348,7 @@ func (self *Scanner) detectCMS(body string) string {
 func (self *Scanner) crawl(url string, depth int, referer, userAgent string, sqliChecks chan<- SQLiCheck) {
 	defer self.wg.Done() // у нас рекурсия!!!
 	if self.isVisitLimitReached(url) {
-		logger.Debugf("Skip %s: visit limit reached", url)
+		logger.Debugf("🚫 Skip %s: visit limit reached", url)
 		<-self.sem
 		return
 	}
@@ -367,7 +371,7 @@ func (self *Scanner) crawl(url string, depth int, referer, userAgent string, sql
 	self.setVisited(currentURL)
 
 	if resp.StatusCode != http.StatusOK {
-		logger.Debugf("Skip %s with status %d", currentURL, resp.StatusCode)
+		logger.Debugf("🚫 Skip %s with status %d", currentURL, resp.StatusCode)
 		return
 	}
 
@@ -392,7 +396,7 @@ func (self *Scanner) processLinks(body []byte, baseURL string, depth int, userAg
 	links, _ := utils.ExtractLinks(body, baseURL)
 	for _, link := range links {
 		link, err := utils.StripFragment(link)
-		if err != nil || !utils.IsSameHost(link, baseURL) || self.isIgnoredResource(link) || self.isVisited(link) || !httpRe.MatchString(link) {
+		if err != nil || !utils.IsSameHost(link, baseURL) || self.isIgnoredResource(link) || self.isVisited(link) || !httpSchemeRegex.MatchString(link) {
 			continue
 		}
 
@@ -406,8 +410,8 @@ func (self *Scanner) processLinks(body []byte, baseURL string, depth int, userAg
 		// logger.Debugf("Split URL params: %s, %v", checkURL, checkParams)
 
 		if len(checkParams) == 0 {
-			if !dynamicSegmentRegex.MatchString(checkURL) {
-				logger.Debugf("URL %s is not dynamic", checkURL)
+			if !variableSegmentRegex.MatchString(checkURL) {
+				logger.Debugf("🚫 URL does not contain a variable segment: %s", checkURL)
 				continue
 			}
 
@@ -459,9 +463,9 @@ func (self *Scanner) processForms(body []byte, baseURL, userAgent string, sqliCh
 			continue
 		}
 		fieldsJson, _ := json.Marshal(form.Fields)
-		logger.Debugf("Form found: Method=%s, Action=%s, Fields=%s", form.Method, form.Action, string(fieldsJson))
+		logger.Debugf("📋 Form found: Method=%s, Action=%s, Fields=%s", form.Method, form.Action, string(fieldsJson))
 		if len(form.Fields) == 0 {
-			logger.Debugf("Form has no fields: Method=%s, Action=%s", form.Method, form.Action)
+			logger.Debugf("🚫 Form has no fields: Method=%s, Action=%s", form.Method, form.Action)
 			continue
 		}
 		sqliChecks <- SQLiCheck{Method: form.Method, URL: form.Action, Params: self.autoFillFields(form.Fields), UserAgent: userAgent, Referer: baseURL}
@@ -476,7 +480,7 @@ func (self *Scanner) injectSQLiPayload(rawURL string) string {
 	// если %00 встречается в самом URL. Поэтому его нужно кодировать 2 раза, то
 	// есть использовать %2500.
 	payload := url.QueryEscape(quotes + url.QueryEscape(nullByte))
-	return dynamicSegmentRegex.ReplaceAllString(rawURL, "/${segment}"+payload+"${end}")
+	return variableSegmentRegex.ReplaceAllString(rawURL, "/${segment}"+payload+"${end}")
 }
 
 func (self *Scanner) generateSQLiCheckKey(check SQLiCheck) (string, error) {
@@ -496,7 +500,7 @@ func (self *Scanner) generateSQLiCheckKey(check SQLiCheck) (string, error) {
 		u.RawQuery = strings.ReplaceAll(u.RawQuery, "=", "")
 		checkURL = u.String()
 	} else {
-		checkURL = dynamicSegmentRegex.ReplaceAllString(checkURL, "/<!>${end}")
+		checkURL = variableSegmentRegex.ReplaceAllString(checkURL, "/:variable${end}")
 	}
 	return fmt.Sprintf("%s %s", check.Method, checkURL), nil
 }
@@ -514,7 +518,7 @@ func (self *Scanner) checkSQLi(check SQLiCheck, results chan<- ScanResult) {
 	}
 
 	if _, loaded := self.checked.LoadOrStore(checkKey, struct{}{}); loaded {
-		logger.Debugf("Skip checked: %s", checkKey)
+		logger.Debugf("🚫 Skip checked: %s", checkKey)
 		return
 	}
 
@@ -546,7 +550,7 @@ func (self *Scanner) detectSQLi(check SQLiCheck) (bool, *SQLiDetails) {
 	}
 
 	if len(check.Params) == 0 {
-		logger.Debugf("Check SQLi: %s %s", check.Method, check.URL)
+		logger.Debugf("🔍 Check SQLi: %s, Method: %s", check.Method, check.URL)
 		errorMessage, status, title := handle(nil)
 		if errorMessage != "" {
 			return true, &SQLiDetails{ErrorMessage: errorMessage, StatusCode: status, PageTitle: title}
@@ -566,7 +570,7 @@ func (self *Scanner) detectSQLi(check SQLiCheck) (bool, *SQLiDetails) {
 			}
 			params := utils.CopyStringMap(check.Params)
 			params[param] += payload
-			logger.Debugf("Check SQLi: %s %s; param=%q", check.Method, check.URL, param)
+			logger.Debugf("🔍 Check SQLi: %s, Method: %s, Param: %q", check.Method, check.URL, param)
 			errorMessage, status, title := handle(params)
 			if errorMessage != "" {
 				return true, &SQLiDetails{ErrorMessage: errorMessage, VulnParam: param, PageTitle: title, StatusCode: status}
@@ -586,9 +590,6 @@ func (self *Scanner) Scan(urls []string) <-chan ScanResult {
 		defer func() {
 			close(sqliChecks)
 			close(results)
-			logger.Infof("🎉 Scanning finished!")
-			logger.Debugf("Total visited links: %d", utils.SyncMapSize(&self.visited))
-			logger.Debugf("Total checked resources: %d", utils.SyncMapSize(&self.checked))
 		}()
 		go func() {
 			for check := range sqliChecks {
@@ -603,6 +604,9 @@ func (self *Scanner) Scan(urls []string) <-chan ScanResult {
 			go self.crawl(url, self.crawlDepth, defaultReferer, self.userAgent, sqliChecks)
 		}
 		self.wg.Wait()
+		logger.Debugf("Total visited links: %d", utils.SyncMapSize(&self.visited))
+		logger.Debugf("Total checked resources: %d", utils.SyncMapSize(&self.checked))
+		logger.Infof("🎉 Scanning finished!")
 	}()
 	return results
 }
