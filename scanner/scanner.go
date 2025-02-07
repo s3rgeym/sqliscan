@@ -31,13 +31,14 @@ const (
 )
 
 var (
-	// Тут только ошибки, которые возникают при неожиданной кавычке в SQL
-	sqlErrorPattern = regexp.MustCompile(`You have an error in your SQL syntax|syntax error at or near|Unclosed quote at position|Unterminated quoted string at or near|Unclosed quotation mark after the character string|quoted string not properly terminated|Incorrect syntax near|could not execute query|bad SQL grammar|<b>(?:Fatal error|Warning)</b>:`)
+	httpRe = regexp.MustCompile("^(?i)https?://")
 	// Динамические URL как правило содержат в последнем сегменте слова,
 	// разделенные с помощью "-" или "+", или закодированные через % либо числа,
 	// а затем идут необязательные финальный слеш или расширение типа ".html" при
 	// использовании Mod Rewrite
 	dynamicSegmentRegex = regexp.MustCompile(`/(?i)(?P<segment>\d+|[^/+-]+[+-][^/]+|[^/]*(?:%[\da-f]{2})+[^/]*)(?P<end>\.[a-z]{2,5}|/)?$`)
+	// Тут только ошибки, которые возникают при неожиданной кавычке в SQL
+	sqlErrorPattern = regexp.MustCompile(`You have an error in your SQL syntax|syntax error at or near|Unclosed quote at position|Unterminated quoted string at or near|Unclosed quotation mark after the character string|quoted string not properly terminated|Incorrect syntax near|could not execute query|bad SQL grammar|<b>(?:Fatal error|Warning)</b>:`)
 )
 
 type Scanner struct {
@@ -391,7 +392,7 @@ func (self *Scanner) processLinks(body []byte, baseURL string, depth int, userAg
 	links, _ := utils.ExtractLinks(body, baseURL)
 	for _, link := range links {
 		link, err := utils.StripFragment(link)
-		if err != nil || !utils.IsSameHost(link, baseURL) || self.isIgnoredResource(link) || self.isVisited(link) {
+		if err != nil || !utils.IsSameHost(link, baseURL) || self.isIgnoredResource(link) || self.isVisited(link) || !httpRe.MatchString(link) {
 			continue
 		}
 

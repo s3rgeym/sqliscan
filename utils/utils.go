@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	html2 "golang.org/x/net/html"
 	"html"
 	"io"
 	"math/rand"
@@ -14,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	html2 "golang.org/x/net/html"
 )
 
 // type Semaphore struct {
@@ -225,7 +226,6 @@ func NormalizePort(host, scheme string) string {
 
 func StripFragment(inputURL string) (string, error) {
 	parsed, err := url.Parse(inputURL)
-
 	if err != nil {
 		return "", err
 	}
