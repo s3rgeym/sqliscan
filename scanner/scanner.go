@@ -527,7 +527,10 @@ func (self *Scanner) checkSQLi(check SQLiCheck, results chan<- ScanResult) {
 
 func (self *Scanner) detectSQLi(check SQLiCheck) (bool, *SQLiDetails) {
 	handle := func(params map[string]string) (string, int, string) {
-		resp, _ := self.sendRequest(check.Method, check.URL, params, check.Referer, check.UserAgent)
+		resp, err := self.sendRequest(check.Method, check.URL, params, check.Referer, check.UserAgent)
+		if err != nil {
+			return "", 0, ""
+		}
 		htmlContent := string(resp.Body)
 		errorMessage := sqlErrorPattern.FindString(htmlContent)
 		if errorMessage == "" {
